@@ -78,9 +78,25 @@ function loadFile(file) {
         return /^\d0000/.test(s) || /^4/.test(s);
       };
 
+      // Exclude non-medical Material Group Names (case-insensitive partial match)
+      const NON_MEDICAL_GROUPS = [
+        "accessory", "accessories",
+        "building", "construction",
+        "furniture", "office supply", "office supplies",
+        "stationery", "vehicle", "it equipment", "computer",
+        "clothing", "uniform", "textile",
+        "food", "beverage",
+      ];
+      const isNonMedicalGroup = name => {
+        if (!name) return false;
+        const lower = String(name).toLowerCase();
+        return NON_MEDICAL_GROUPS.some(g => lower.includes(g));
+      };
+
       let df = trimmed
         .filter(r => String(r["Special Stock Type"]).trim() !== "Q")
-        .filter(r => !isNonMedicalCode(r["Material"]));
+        .filter(r => !isNonMedicalCode(r["Material"]))
+        .filter(r => !isNonMedicalGroup(r["Material Group Name"]));
 
       const numCols = ["Unrestricted Stock","Stock in Quality Inspection","Blocked Stock","Stock in Transit",
                        "Value of Stock in Quality Inspection","Value of Stock in Transit","Value of Unrestricted Stock"];
