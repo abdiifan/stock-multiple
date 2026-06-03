@@ -69,13 +69,13 @@ function loadFile(file) {
       const missing = REQUIRED_COLUMNS.filter(c => !cols.includes(c));
       if (missing.length) { showError(`Missing columns: ${missing.join(", ")}`); return; }
 
-      // Helper: exclude non-medical material codes matching pattern X0000… (any digit followed by 0000)
-      // Excel may parse large codes as floats/scientific notation — use Math.round to get full integer string
+      // Exclude non-medical material codes:
+      // Pattern: any digit followed by 0000… (e.g. 1000…, 2000…, 3000…, 4000…, 5000…, 6000…, 9000…)
+      // Also handles Excel scientific notation (e.g. 7E+09) and plain codes starting with "4"
       const isNonMedicalCode = code => {
         let s = String(code).trim();
-        // Handle scientific notation (e.g. 7e9 or 7.0000002e9)
-        if (/e/i.test(s)) s = Math.round(Number(s)).toString();
-        return /^\d0000/.test(s);
+        if (/e/i.test(s)) s = Math.round(Number(s)).toString(); // fix scientific notation
+        return /^\d0000/.test(s) || /^4/.test(s);
       };
 
       let df = trimmed
