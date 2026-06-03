@@ -69,14 +69,12 @@ function loadFile(file) {
       const missing = REQUIRED_COLUMNS.filter(c => !cols.includes(c));
       if (missing.length) { showError(`Missing columns: ${missing.join(", ")}`); return; }
 
-      // Regex: storage location codes that are hyphens followed by any letter(s) and optional digits
-      // Matches patterns like: -G, --G, ---G, --G1, --G2, -A3, etc.
-      const storageLocExcludePattern = /^-+[A-Za-z]/;
+      // Helper: exclude non-medical material codes starting with 1000…, 2000…, 3000…, 4000…
+      const isNonMedicalCode = code => /^[1-4]\d{3}/.test(String(code).trim());
 
       let df = trimmed
         .filter(r => String(r["Special Stock Type"]).trim() !== "Q")
-        .filter(r => !String(r["Material"]).startsWith("4"))
-        .filter(r => !storageLocExcludePattern.test(String(r["Storage Location"]).trim()));
+        .filter(r => !isNonMedicalCode(r["Material"]));
 
       const numCols = ["Unrestricted Stock","Stock in Quality Inspection","Blocked Stock","Stock in Transit",
                        "Value of Stock in Quality Inspection","Value of Stock in Transit","Value of Unrestricted Stock"];
