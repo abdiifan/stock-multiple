@@ -15,6 +15,8 @@ const REQUIRED_COLUMNS = [
 ];
 
 const COLORWAY = ["#58a6ff","#3fb950","#d29922","#f85149","#a371f7","#79c0ff","#56d364","#e3b341","#ff7b72","#d2a8ff","#ffa657","#70d9a0"];
+
+// Exclusion rules loaded from filters.js (must be included before this script)
 const PLOTLY_LAYOUT = {
   paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
   font: { family: "IBM Plex Sans", color: "#8b949e", size: 12 },
@@ -69,30 +71,6 @@ function loadFile(file) {
       const missing = REQUIRED_COLUMNS.filter(c => !cols.includes(c));
       if (missing.length) { showError(`Missing columns: ${missing.join(", ")}`); return; }
 
-      // Exclude non-medical material codes:
-      // Pattern: any digit followed by 0000… (e.g. 1000…, 2000…, 3000…, 4000…, 5000…, 6000…, 9000…)
-      // Also handles Excel scientific notation (e.g. 7E+09) and plain codes starting with "4"
-      const isNonMedicalCode = code => {
-        let s = String(code).trim();
-        if (/e/i.test(s)) s = Math.round(Number(s)).toString(); // fix scientific notation
-        return /^\d0000/.test(s) || /^4/.test(s);
-      };
-
-      // Exclude non-medical Material Group Names (case-insensitive partial match)
-      const NON_MEDICAL_GROUPS = [
-        "accessory", "accessories",
-        "building", "construction",
-        "furniture", "office supply", "office supplies",
-        "stationery", "vehicle", "it equipment", "computer",
-        "clothing", "uniform", "textile",
-        "food", "beverage",
-      ];
-      const isNonMedicalGroup = name => {
-        if (!name) return false;
-        const lower = String(name).toLowerCase();
-        return NON_MEDICAL_GROUPS.some(g => lower.includes(g));
-      };
-
       let df = trimmed
         .filter(r => String(r["Special Stock Type"]).trim() !== "Q")
         .filter(r => !isNonMedicalCode(r["Material"]))
@@ -125,7 +103,12 @@ function loadFile(file) {
 // ── POPULATE FILTER DROPDOWNS ──────────────────────────────────────────────
 function populateAllFilters() {
   const plants = [...new Set(rawDf.map(r=>r["Plant Name"]))].filter(Boolean).sort();
-  const mgs    = [...new Set(rawDf.map(r=>r["Material Group Name"]))].filter(Boolean).sort();
+  // Explicitly exclude non-medical groups from dropdowns — mirrors the exclusion
+  // applied during data load, so the filter never surfaces excluded categories.
+  const mgs    = [...new Set(rawDf.map(r=>r["Material Group Name"]))]
+    .filter(Boolean)
+    .filter(name => !isNonMedicalGroup(name))
+    .sort();
 
   const plantSelectors = ["dash-filter-plant","transit-filter-plant","expiry-filter-plant","qc-filter-plant","flow-filter-plant","filter-plant"];
   const mgSelectors    = ["dash-filter-mg","transit-filter-mg","expiry-filter-mg","qc-filter-mg","branch-filter-mg","flow-filter-mg","filter-mg"];
@@ -583,7 +566,7 @@ function renderBranch() {
 
     if (!matTabInitialized) {
       matTabInitialized=true;
-      const mgNamesForFilter=[...new Set(df.map(r=>r["Material Group Name"]))].filter(Boolean).sort();
+      const mgNamesForFilter=[...new Set(df.map(r=>r["Material Group Name"]))].filter(Boolean).filter(name=>!isNonMedicalGroup(name)).sort();
       wrap.innerHTML=`
         <div style="display:flex;gap:0.8rem;flex-wrap:wrap;align-items:flex-end;margin-bottom:1rem;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.8rem">
           <div>
@@ -821,14 +804,17 @@ function renderPreview() {
 }
 
 function populatePreviewFilters() {
-  function fill(id,key) {
-    const sel=document.getElementById(id); if(!sel) return;
-    const vals=[...new Set(rawDf.map(r=>r[key]))].filter(Boolean).sort();
-    sel.innerHTML=vals.map(v=>`<option value="${v}">${v}</option>`).join("");
+  function fill(id, key, excludeFn) {
+    const sel = document.getElementById(id); if (!sel) return;
+    const vals = [...new Set(rawDf.map(r=>r[key]))]
+      .filter(Boolean)
+      .filter(v => !excludeFn || !excludeFn(v))
+      .sort();
+    sel.innerHTML = vals.map(v=>`<option value="${v}">${v}</option>`).join("");
   }
-  fill("filter-plant","Plant Name");
-  fill("filter-mg","Material Group Name");
-  fill("filter-mgname","Material Group Name");
+  fill("filter-plant",  "Plant Name",         null);
+  fill("filter-mg",     "Material Group Name", isNonMedicalGroup);
+  fill("filter-mgname", "Material Group Name", isNonMedicalGroup);
 }
 
 function applyPreviewFilters() {
