@@ -88,6 +88,16 @@ function loadFile(file) {
         row["Total Qty"]   = row["Unrestricted Stock"] + row["Stock in Transit"] + row["Stock in Quality Inspection"];
       });
 
+      // Exclude any row where ALL stock quantities are zero —
+      // this covers: expired items with zero qty, unrestricted-only items
+      // with zero qty, and any other stock-type combination that nets to zero.
+      df = df.filter(r =>
+        r["Unrestricted Stock"] > 0 ||
+        r["Stock in Transit"] > 0 ||
+        r["Stock in Quality Inspection"] > 0 ||
+        r["Blocked Stock"] > 0
+      );
+
       rawDf  = df;
       filtDf = df;
       showSuccess(file.name, df.length);
