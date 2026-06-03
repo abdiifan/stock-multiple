@@ -482,7 +482,6 @@ function renderBranch() {
     centralName = df.find(r=>String(r["Plant"]).toUpperCase()==="HO01")?.["Plant Name"] || "HO01";
     document.getElementById("branch-central-info").style.display = "none";
   } else {
-    // Fallback: highest total value plant
     const totals = {};
     df.forEach(r => { const p = r["Plant Name"]; totals[p] = (totals[p]||0) + r["Total Value"]; });
     centralName = Object.entries(totals).sort((a,b)=>b[1]-a[1])[0]?.[0] || "";
@@ -490,7 +489,7 @@ function renderBranch() {
     document.getElementById("branch-central-info").innerHTML = `ℹ️ HO01 not found — using <b>${centralName}</b> as central branch (highest inventory value).`;
   }
 
-  // Aggregate
+  // ── Plant-level aggregate ────────────────────────────────────────────────
   const aggMap = {};
   df.forEach(r => {
     const k = r["Plant Name"];
@@ -505,7 +504,43 @@ function renderBranch() {
   const allBranches = branchAgg.map(r=>r["Plant Name"]);
   const others = allBranches.filter(b => b !== centralName);
 
-  // Populate select
+  // ── Material × Plant aggregate ───────────────────────────────────────────
+  // matPlantMap[material][plantName] = { Unrestricted, Transit, QC, TotalValue, Qty, Desc }
+  const matPlantMap = {};
+  df.forEach(r => {
+    const mat  = r["Material"];
+    const pl   = r["Plant Name"];
+    if (!matPlantMap[mat]) matPlantMap[mat] = { desc: r["Material Description"], group: r["Material Group Name"], category: r["Category"] };
+    if (!matPlantMap[mat][pl]) matPlantMap[mat][pl] = { Unrestricted: 0, Transit: 0, QC: 0, TotalValue: 0, Qty: 0 };
+    matPlantMap[mat][pl].Unrestricted += r["Value of Unrestricted Stock"];
+    matPlantMap[mat][pl].Transit      += r["Value of Stock in Transit"];
+    matPlantMap[mat][pl].QC           += r["Value of Stock in Quality Inspection"];
+    matPlantMap[mat][pl].TotalValue   += r["Total Value"];
+    matPlantMap[mat][pl].Qty          += r["Unrestricted Stock"] + r["Stock in Transit"] + r["Stock in Quality Inspection"];
+  });
+
+  // ── Sub-tab toggle ────────────────────────────────────────────────────────
+  const tabsHtml = `
+    <div class="branch-tabs" id="branch-tabs">
+      <button class="branch-tab active" data-tab="value">📊 Branch Value Comparison</button>
+      <button class="branch-tab" data-tab="material">🔬 Material Across Branches</button>
+    </div>
+    <div id="branch-tab-value"></div>
+    <div id="branch-tab-material" style="display:none"></div>`;
+  document.getElementById("branch-tabs-wrap").innerHTML = tabsHtml;
+
+  document.querySelectorAll(".branch-tab").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".branch-tab").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      const tab = btn.dataset.tab;
+      document.getElementById("branch-tab-value").style.display    = tab === "value"    ? "block" : "none";
+      document.getElementById("branch-tab-material").style.display = tab === "material" ? "block" : "none";
+      if (tab === "material") renderMaterialTab();
+    });
+  });
+
+  // ── Populate branch select ────────────────────────────────────────────────
   const sel = document.getElementById("branch-select");
   sel.innerHTML = "";
   others.forEach(b => {
@@ -514,27 +549,32 @@ function renderBranch() {
     sel.appendChild(opt);
   });
 
+  // ════════════════════════════════════════════════════════════════════════
+  // TAB 1 — BRANCH VALUE COMPARISON (original, unchanged)
+  // ════════════════════════════════════════════════════════════════════════
   function updateBranchCharts() {
     const selected = [...sel.selectedOptions].map(o=>o.value);
+    const wrap = document.getElementById("branch-tab-value");
     if (!selected.length) {
-      document.getElementById("branch-table-wrap").innerHTML = `<div class="alert-warning">⚠️ Please select at least one branch to compare.</div>`;
+      wrap.innerHTML = `<div class="alert-warning">⚠️ Please select at least one branch to compare.</div>`;
       return;
     }
     const compareNames = [centralName, ...selected];
     const compareDf    = branchAgg.filter(r => compareNames.includes(r["Plant Name"]));
 
-    // Table
     const bCols = [
-      { key: "Plant Name", label: "Plant Name" },
-      { key: "Total_Value", label: "Total Value (ETB)", fmt: fmtETB },
+      { key: "Plant Name",   label: "Plant Name" },
+      { key: "Total_Value",  label: "Total Value (ETB)", fmt: fmtETB },
       { key: "Unrestricted", label: "Unrestricted (ETB)", fmt: fmtETB },
-      { key: "Transit", label: "Transit (ETB)", fmt: fmtETB },
-      { key: "QC", label: "QC (ETB)", fmt: fmtETB },
-      { key: "Items", label: "# Items" },
+      { key: "Transit",      label: "Transit (ETB)", fmt: fmtETB },
+      { key: "QC",           label: "QC (ETB)", fmt: fmtETB },
+      { key: "Items",        label: "# Items" },
     ];
-    document.getElementById("branch-table-wrap").innerHTML = buildTable(compareDf, bCols, r => r["Plant Name"] === centralName ? "row-blue" : "");
+    wrap.innerHTML = `
+      <div id="branch-table-wrap-inner" style="margin-bottom:1rem">${buildTable(compareDf, bCols, r => r["Plant Name"] === centralName ? "row-blue" : "")}</div>
+      <div class="chart-box full" style="margin-top:1rem"><div class="section-header">Value Comparison by Type</div><div id="chart-branch-grouped"></div></div>
+      <div class="chart-box full"><div class="section-header">Total Value vs Transit Value</div><div id="chart-branch-scatter"></div></div>`;
 
-    // Grouped bar
     const types = ["Unrestricted","Transit","QC"];
     const colors2 = { Unrestricted: "#58a6ff", Transit: "#d29922", QC: "#f85149" };
     const traces = types.map(t => ({
@@ -546,7 +586,6 @@ function renderBranch() {
     }));
     Plotly.newPlot("chart-branch-grouped", traces, pl({ barmode: "group", height: 300 }), PLOTLY_CONFIG);
 
-    // Scatter
     Plotly.newPlot("chart-branch-scatter", [{
       type: "scatter", mode: "markers+text",
       x: compareDf.map(r=>r.Total_Value), y: compareDf.map(r=>r.Transit),
@@ -557,8 +596,188 @@ function renderBranch() {
     }], pl({ height: 320, xaxis: { ...PLOTLY_LAYOUT.xaxis, title: "Total Inventory Value (ETB)" }, yaxis: { ...PLOTLY_LAYOUT.yaxis, title: "Transit Value (ETB)" } }), PLOTLY_CONFIG);
   }
 
+  // ════════════════════════════════════════════════════════════════════════
+  // TAB 2 — MATERIAL ACROSS BRANCHES
+  // ════════════════════════════════════════════════════════════════════════
+  let matTabInitialized = false;
+
+  function renderMaterialTab() {
+    const wrap = document.getElementById("branch-tab-material");
+
+    // Build sorted list of all plant names for column headers
+    const allPlantNames = [...new Set(df.map(r => r["Plant Name"]))].sort((a,b)=>{
+      if (a === centralName) return -1;
+      if (b === centralName) return 1;
+      return a.localeCompare(b);
+    });
+
+    if (!matTabInitialized) {
+      matTabInitialized = true;
+      wrap.innerHTML = `
+        <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end;margin-bottom:1rem;">
+          <div>
+            <label class="filter-label">Search material / description</label>
+            <input id="mat-search" type="text" placeholder="e.g. amoxicillin, 100023…"
+              style="background:#161b22;border:1px solid #30363d;color:#e6edf3;padding:6px 10px;border-radius:6px;width:260px;font-size:13px">
+          </div>
+          <div>
+            <label class="filter-label">Metric</label>
+            <select id="mat-metric" style="background:#161b22;border:1px solid #30363d;color:#e6edf3;padding:6px 10px;border-radius:6px;font-size:13px">
+              <option value="TotalValue">Total Value (ETB)</option>
+              <option value="Unrestricted">Unrestricted Value (ETB)</option>
+              <option value="Transit">Transit Value (ETB)</option>
+              <option value="QC">QC Value (ETB)</option>
+              <option value="Qty">Total Quantity</option>
+            </select>
+          </div>
+          <div>
+            <label class="filter-label">Sort by</label>
+            <select id="mat-sort" style="background:#161b22;border:1px solid #30363d;color:#e6edf3;padding:6px 10px;border-radius:6px;font-size:13px">
+              <option value="total_desc">Highest Total Value ↓</option>
+              <option value="total_asc">Lowest Total Value ↑</option>
+              <option value="desc_asc">Material Description A–Z</option>
+              <option value="spread_desc">Most Branches (spread) ↓</option>
+            </select>
+          </div>
+          <div>
+            <label class="filter-label">Category</label>
+            <select id="mat-cat" style="background:#161b22;border:1px solid #30363d;color:#e6edf3;padding:6px 10px;border-radius:6px;font-size:13px">
+              <option value="">All Categories</option>
+              ${[...new Set(df.map(r=>r["Category"]))].sort().map(c=>`<option value="${c}">${c}</option>`).join("")}
+            </select>
+          </div>
+          <button id="mat-apply" style="background:#238636;color:#fff;border:none;padding:7px 16px;border-radius:6px;cursor:pointer;font-size:13px">Apply</button>
+        </div>
+        <div id="mat-chart-wrap" style="margin-bottom:1rem"></div>
+        <div id="mat-table-wrap"></div>`;
+
+      document.getElementById("mat-apply").addEventListener("click", refreshMaterialView);
+      document.getElementById("mat-search").addEventListener("keydown", e => { if (e.key === "Enter") refreshMaterialView(); });
+    }
+
+    refreshMaterialView();
+
+    function refreshMaterialView() {
+      const searchVal = (document.getElementById("mat-search").value || "").toLowerCase().trim();
+      const metric    = document.getElementById("mat-metric").value;
+      const sortMode  = document.getElementById("mat-sort").value;
+      const catFilter = document.getElementById("mat-cat").value;
+
+      // Build flat list of materials with per-plant data
+      let materials = Object.entries(matPlantMap)
+        .filter(([mat, info]) => {
+          if (catFilter && info.category !== catFilter) return false;
+          if (searchVal) {
+            return mat.toLowerCase().includes(searchVal) || info.desc.toLowerCase().includes(searchVal);
+          }
+          return true;
+        })
+        .map(([mat, info]) => {
+          const plantData = {};
+          let grandTotal = 0;
+          let branchCount = 0;
+          allPlantNames.forEach(pn => {
+            const v = info[pn] ? info[pn][metric] : 0;
+            plantData[pn] = v || 0;
+            grandTotal += plantData[pn];
+            if ((info[pn]?.TotalValue || 0) > 0) branchCount++;
+          });
+          return { mat, desc: info.desc, group: info.group, category: info.category, plantData, grandTotal, branchCount };
+        });
+
+      // Sort
+      if (sortMode === "total_desc")   materials.sort((a,b) => b.grandTotal - a.grandTotal);
+      if (sortMode === "total_asc")    materials.sort((a,b) => a.grandTotal - b.grandTotal);
+      if (sortMode === "desc_asc")     materials.sort((a,b) => a.desc.localeCompare(b.desc));
+      if (sortMode === "spread_desc")  materials.sort((a,b) => b.branchCount - a.branchCount);
+
+      const top = materials.slice(0, 30); // show top 30 in chart
+      const isValue = metric !== "Qty";
+      const fmtFn = isValue ? fmtETB : fmtQty;
+
+      // ── CHART: grouped bars per material, one trace per plant ────────────
+      const chartWrap = document.getElementById("mat-chart-wrap");
+      if (top.length === 0) {
+        chartWrap.innerHTML = `<div class="alert-info">No materials found for the current filter.</div>`;
+        document.getElementById("mat-table-wrap").innerHTML = "";
+        return;
+      }
+
+      // Single-material detail vs multi-material overview
+      if (top.length === 1) {
+        // One material selected — show per-plant bar with all detail
+        const info = top[0];
+        const traces = [{
+          type: "bar",
+          x: allPlantNames,
+          y: allPlantNames.map(pn => info.plantData[pn] || 0),
+          marker: { color: allPlantNames.map((_,i) => COLORWAY[i % COLORWAY.length]) },
+          hovertemplate: `<b>%{x}</b><br>${metric}: %{y:,.0f}<extra></extra>`,
+        }];
+        chartWrap.innerHTML = `<div class="chart-box full"><div class="section-header">${info.desc} (${info.mat}) — ${metric} across all branches</div><div id="chart-mat-detail"></div></div>`;
+        Plotly.newPlot("chart-mat-detail", traces, pl({ height: 320 }), PLOTLY_CONFIG);
+      } else {
+        // Multiple materials — one trace per plant, x-axis = material
+        const plantTraces = allPlantNames.map((pn, i) => ({
+          type: "bar", name: pn,
+          x: top.map(m => m.mat),
+          y: top.map(m => m.plantData[pn] || 0),
+          customdata: top.map(m => m.desc),
+          marker: { color: COLORWAY[i % COLORWAY.length] },
+          hovertemplate: `<b>%{customdata}</b><br>${pn}<br>${metric}: %{y:,.0f}<extra></extra>`,
+        }));
+        chartWrap.innerHTML = `<div class="chart-box full"><div class="section-header">Top ${top.length} Materials — ${metric} by Branch (grouped bar)</div><div id="chart-mat-multi"></div></div>`;
+        Plotly.newPlot("chart-mat-multi", plantTraces, pl({ barmode: "group", height: Math.max(360, 30*top.length), xaxis: { ...PLOTLY_LAYOUT.xaxis, tickangle: -40 } }), PLOTLY_CONFIG);
+      }
+
+      // ── TABLE: material rows × plant columns ─────────────────────────────
+      const colDefs = [
+        { key: "mat",      label: "Material" },
+        { key: "desc",     label: "Description" },
+        { key: "category", label: "Category" },
+        ...allPlantNames.map(pn => ({ key: `__plant__${pn}`, label: pn, fmt: fmtFn })),
+        { key: "grandTotal", label: `Grand Total`, fmt: fmtFn },
+        { key: "branchCount", label: "# Branches" },
+      ];
+
+      const tableRows = materials.slice(0, 200).map(m => {
+        const row = { mat: m.mat, desc: m.desc, category: m.category, grandTotal: m.grandTotal, branchCount: m.branchCount };
+        allPlantNames.forEach(pn => { row[`__plant__${pn}`] = m.plantData[pn] || 0; });
+        return row;
+      });
+
+      // buildTable supports custom rowClass — highlight rows that exist in central branch
+      const centralKey = `__plant__${centralName}`;
+      document.getElementById("mat-table-wrap").innerHTML = `
+        <div style="color:#8b949e;font-size:12px;margin-bottom:6px">
+          Showing ${tableRows.length} of ${materials.length} materials · Blue column = Central (${centralName})
+        </div>
+        ${buildMaterialTable(tableRows, colDefs, centralKey)}
+        ${materials.length > 200 ? `<div class="alert-info">Showing first 200 of ${materials.length} materials. Refine your search to narrow results.</div>` : ""}`;
+    }
+  }
+
   sel.addEventListener("change", updateBranchCharts);
   updateBranchCharts();
+}
+
+// Build a table that can highlight a specific column (plant) as central
+function buildMaterialTable(rows, cols, centralColKey) {
+  if (!rows.length) return `<div class="alert-info">No data.</div>`;
+  const thead = `<thead><tr>${cols.map(c => `<th${c.key === centralColKey ? ' style="color:#58a6ff;background:#0d2035"' : ""}>${c.label}</th>`).join("")}</tr></thead>`;
+  const tbody = rows.map(r => {
+    const cells = cols.map(c => {
+      const v = r[c.key];
+      const display = c.fmt ? c.fmt(v) : (v == null ? "" : v);
+      const isZero  = (typeof v === "number" && v === 0);
+      const style   = c.key === centralColKey
+        ? 'style="color:#58a6ff;background:#0d2035"'
+        : isZero ? 'style="color:#484f58"' : "";
+      return `<td ${style}>${display}</td>`;
+    }).join("");
+    return `<tr>${cells}</tr>`;
+  }).join("");
+  return `<div class="tbl-wrap"><table class="data-tbl"><colgroup>${cols.map(()=>"<col>").join("")}</colgroup>${thead}<tbody>${tbody}</tbody></table></div>`;
 }
 
 // ── SUPPLY CHAIN FLOW ───────────────────────────────────────────────────────
