@@ -144,16 +144,15 @@
   <!-- ── BRANCH ── -->
   <section id="page-branch" class="page" style="display:none">
     <div class="page-title">Branch Comparison</div>
-    <div class="page-subtitle">Compare inventory performance across branches vs. HO01 Central</div>
+    <div class="page-subtitle">Compare inventory performance across branches — by total value or by individual material</div>
     <div id="branch-central-info" class="alert-info" style="margin-bottom:1rem"></div>
-    <div class="filter-row">
-      <label class="filter-label">Select branches to compare against central:</label>
-      <select id="branch-select" multiple size="5"></select>
+
+    <div class="filter-row" id="branch-select-row">
+      <label class="filter-label">Select branches to compare against central (Value tab):</label>
+      <select id="branch-select" multiple size="4"></select>
     </div>
-    <div class="section-header" style="margin-top:1.5rem">Comparison Summary</div>
-    <div id="branch-table-wrap"></div>
-    <div class="chart-box full" style="margin-top:1rem"><div class="section-header">Value Comparison by Type</div><div id="chart-branch-grouped"></div></div>
-    <div class="chart-box full"><div class="section-header">Total Value vs Transit Value</div><div id="chart-branch-scatter"></div></div>
+
+    <div id="branch-tabs-wrap" style="margin-top:1.2rem"></div>
   </section>
 
   <!-- ── FLOW ── -->
