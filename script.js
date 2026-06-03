@@ -69,8 +69,8 @@ function loadFile(file) {
       const missing = REQUIRED_COLUMNS.filter(c => !cols.includes(c));
       if (missing.length) { showError(`Missing columns: ${missing.join(", ")}`); return; }
 
-      // Helper: exclude non-medical material codes starting with 1000…, 2000…, 3000…, 4000…
-      const isNonMedicalCode = code => /^[1-4]\d{3}/.test(String(code).trim());
+      // Helper: exclude non-medical material codes matching pattern X0000… (any digit followed by 0000)
+      const isNonMedicalCode = code => /^\d0000/.test(String(code).trim());
 
       let df = trimmed
         .filter(r => String(r["Special Stock Type"]).trim() !== "Q")
