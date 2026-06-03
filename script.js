@@ -127,10 +127,11 @@ function populateAllFilters() {
 // ── APPLY PAGE FILTER ──────────────────────────────────────────────────────
 function applyPageFilter(page) {
   const f = pageFilters[page] || {};
-  return rawDf.filter(r =>
+  const filtered = rawDf.filter(r =>
     (!f.plant || r["Plant Name"] === f.plant) &&
     (!f.mg    || r["Material Group Name"] === f.mg)
   );
+  return applyReconciliationToData(filtered);
 }
 
 // ── UI HELPERS ─────────────────────────────────────────────────────────────
@@ -851,11 +852,72 @@ function renderPreviewTable() {
 // ═══════════════════════════════════════════════════════════════════════════
 // MATERIAL CODE RECONCILIATION
 // ═══════════════════════════════════════════════════════════════════════════
+
+// Returns the canonical (primary) code for a given material code,
+// based on defined reconcile groups. Used by all renderers.
+function getCanonicalCode(code) {
+  for (const g of reconcileGroups) {
+    if (g.codes.includes(code)) return g.codes[0]; // first code = primary
+  }
+  return code;
+}
+
+// Merges rawDf rows so that reconciled codes are aggregated together.
+// Returns a new array where aliased materials are summed into their primary code.
+function applyReconciliationToData(df) {
+  if (!reconcileGroups.length) return df;
+  const merged = [];
+  const primaryMap = {}; // primaryCode -> merged row index
+
+  df.forEach(row => {
+    const primary = getCanonicalCode(row["Material"]);
+    if (primary === row["Material"]) {
+      // Not an alias, or already the primary
+      const idx = primaryMap[primary];
+      if (idx !== undefined) {
+        // Another row with same primary already added — aggregate
+        const target = merged[idx];
+        ["Unrestricted Stock","Stock in Quality Inspection","Blocked Stock","Stock in Transit",
+         "Value of Stock in Quality Inspection","Value of Stock in Transit",
+         "Value of Unrestricted Stock","Total Value","Total Qty"].forEach(c => {
+          target[c] = (target[c]||0) + (row[c]||0);
+        });
+      } else {
+        primaryMap[primary] = merged.length;
+        merged.push({...row});
+      }
+    } else {
+      // This is an alias — merge into primary
+      const idx = primaryMap[primary];
+      if (idx !== undefined) {
+        const target = merged[idx];
+        ["Unrestricted Stock","Stock in Quality Inspection","Blocked Stock","Stock in Transit",
+         "Value of Stock in Quality Inspection","Value of Stock in Transit",
+         "Value of Unrestricted Stock","Total Value","Total Qty"].forEach(c => {
+          target[c] = (target[c]||0) + (row[c]||0);
+        });
+        // Append alias code to description for visibility
+        if (!target["Material Description"].includes(`[+${row["Material"]}]`)) {
+          target["Material Description"] += ` [+${row["Material"]}]`;
+        }
+      } else {
+        // Primary not yet seen — add this row as if it were the primary
+        primaryMap[primary] = merged.length;
+        merged.push({...row, Material: primary});
+      }
+    }
+  });
+  return merged;
+}
+
 function openReconcilePanel() {
   document.getElementById("reconcile-panel").style.display="flex";
-  document.getElementById("reconcile-panel").style.flexDirection="column";
   document.getElementById("reconcile-overlay").style.display="block";
   refreshReconcileGroupsList();
+  // Restore search state
+  const q = document.getElementById("rp-search").value;
+  if (q.trim()) searchReconcileMaterials(q);
+  else refreshReconcilePending();
 }
 
 function closeReconcilePanel() {
@@ -864,87 +926,149 @@ function closeReconcilePanel() {
 }
 
 function searchReconcileMaterials(query) {
+  const resultsEl = document.getElementById("rp-search-results");
   if (!rawDf.length || !query.trim()) {
-    document.getElementById("rp-search-results").innerHTML=`<div style="color:var(--dim);font-size:0.78rem;padding:0.5rem">Upload data and type to search materials.</div>`;
+    resultsEl.innerHTML=`<div style="color:var(--dim);font-size:0.78rem;padding:0.5rem">Upload data and type to search materials.</div>`;
     return;
   }
-  const q=query.toLowerCase().trim();
-  const allMaterials=[...new Map(rawDf.map(r=>[r["Material"],{code:r["Material"],desc:r["Material Description"]}])).values()];
-  const matches=allMaterials.filter(m=>m.code.toLowerCase().includes(q)||m.desc.toLowerCase().includes(q)).slice(0,20);
+  const q = query.toLowerCase().trim();
+  const allMaterials = [...new Map(rawDf.map(r=>[r["Material"],{code:r["Material"],desc:r["Material Description"]}])).values()];
+  const matches = allMaterials.filter(m=>m.code.toLowerCase().includes(q)||m.desc.toLowerCase().includes(q)).slice(0,20);
 
-  if (!matches.length) { document.getElementById("rp-search-results").innerHTML=`<div class="alert-info">No materials found.</div>`; return; }
+  if (!matches.length) { resultsEl.innerHTML=`<div class="alert-info">No materials found.</div>`; return; }
 
-  document.getElementById("rp-search-results").innerHTML=matches.map(m=>{
-    const isPending=reconcilePending.some(p=>p.code===m.code);
-    return `<div class="rp-result-item${isPending?" selected":""}" data-code="${m.code}" data-desc="${m.desc.replace(/"/g,'&quot;')}">
-      <span class="rp-result-code">${m.code}</span>
-      <span class="rp-result-desc">${m.desc}</span>
-      <button class="rp-add-btn${isPending?" added":""}" data-code="${m.code}" data-desc="${m.desc.replace(/"/g,'&quot;')}">${isPending?"✓ Added":"+ Add"}</button>
+  // FIX Bug 1: Use index-based closure instead of data-attributes for click handler
+  // This avoids HTML attribute encoding issues with special chars in descriptions
+  resultsEl.innerHTML = matches.map((m, i) => {
+    const isPending = reconcilePending.some(p=>p.code===m.code);
+    const inGroup   = reconcileGroups.some(g=>g.codes.includes(m.code));
+    const tag = inGroup ? `<span style="font-size:0.65rem;color:var(--green);margin-left:4px">✓ In group</span>` : "";
+    return `<div class="rp-result-item${isPending?" selected":""}" data-match-idx="${i}">
+      <span class="rp-result-code">${escHtml(m.code)}</span>
+      <span class="rp-result-desc">${escHtml(m.desc)}${tag}</span>
+      <button class="rp-add-btn${isPending?" added":""}" data-match-idx="${i}">${isPending?"✓ Added":"+ Add"}</button>
     </div>`;
   }).join("");
 
-  document.querySelectorAll(".rp-add-btn").forEach(btn=>{
-    btn.addEventListener("click",e=>{
+  // Attach listeners using closure over `matches` array — no data-attribute encoding needed
+  resultsEl.querySelectorAll(".rp-add-btn").forEach(btn => {
+    btn.addEventListener("click", e => {
       e.stopPropagation();
-      const code=btn.dataset.code, desc=btn.dataset.desc;
-      if (!reconcilePending.some(p=>p.code===code)) {
-        reconcilePending.push({code,desc});
+      const m = matches[parseInt(btn.dataset.matchIdx)];
+      if (!m) return;
+      if (!reconcilePending.some(p=>p.code===m.code)) {
+        reconcilePending.push({code: m.code, desc: m.desc});
         refreshReconcilePending();
-        searchReconcileMaterials(query);
+        searchReconcileMaterials(query); // re-render results to update "Added" state
       }
     });
   });
 }
 
+// Simple HTML escape to prevent XSS in material descriptions
+function escHtml(str) {
+  return String(str).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
 function refreshReconcilePending() {
-  const el=document.getElementById("rp-pending");
-  const count=document.getElementById("rp-pending-count");
-  count.textContent=reconcilePending.length?`(${reconcilePending.length})`:"";
-  if (!reconcilePending.length) { el.innerHTML=`<div style="color:var(--dim);font-size:0.78rem;padding:0.5rem">No codes selected yet. Search and add codes above.</div>`; return; }
-  el.innerHTML=reconcilePending.map((p,i)=>`
+  const el    = document.getElementById("rp-pending");
+  const count = document.getElementById("rp-pending-count");
+  count.textContent = reconcilePending.length ? `(${reconcilePending.length})` : "";
+  if (!reconcilePending.length) {
+    el.innerHTML=`<div style="color:var(--dim);font-size:0.78rem;padding:0.5rem">No codes selected yet. Search and add codes above.</div>`;
+    return;
+  }
+  el.innerHTML = reconcilePending.map((p, i) => `
     <div class="rp-pending-item">
-      <span class="rp-result-code">${p.code}</span>
-      <span class="rp-result-desc" style="flex:1;margin:0 0.5rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:0.74rem;color:var(--muted)">${p.desc}</span>
+      <span class="rp-result-code">${escHtml(p.code)}</span>
+      <span class="rp-result-desc" style="flex:1;margin:0 0.5rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:0.74rem;color:var(--muted)">${escHtml(p.desc)}</span>
       <button class="rp-pending-remove" data-idx="${i}">✕</button>
     </div>`).join("");
-  document.querySelectorAll(".rp-pending-remove").forEach(btn=>{
-    btn.addEventListener("click",()=>{
-      reconcilePending.splice(parseInt(btn.dataset.idx),1);
+
+  // FIX Bug 2 (partial): Use stable index from current reconcilePending snapshot
+  el.querySelectorAll(".rp-pending-remove").forEach(btn => {
+    const idx = parseInt(btn.dataset.idx);
+    btn.addEventListener("click", () => {
+      reconcilePending.splice(idx, 1);
       refreshReconcilePending();
-      const q=document.getElementById("rp-search").value;
+      const q = document.getElementById("rp-search").value;
       if (q.trim()) searchReconcileMaterials(q);
     });
   });
 }
 
 function confirmReconcileGroup() {
-  if (reconcilePending.length<2) { alert("Select at least 2 material codes to link."); return; }
-  const name=`Group ${reconcileGroups.length+1} (${reconcilePending[0].code}+${reconcilePending.length-1})`;
-  reconcileGroups.push({name, codes:[...reconcilePending.map(p=>p.code)]});
-  reconcilePending.length=0;
+  if (reconcilePending.length < 2) { alert("Select at least 2 material codes to link."); return; }
+
+  // Check if any pending code already belongs to an existing group
+  const conflicts = reconcilePending.filter(p => reconcileGroups.some(g=>g.codes.includes(p.code)));
+  if (conflicts.length) {
+    alert(`These codes are already in a group: ${conflicts.map(c=>c.code).join(", ")}\nRemove them from their existing group first.`);
+    return;
+  }
+
+  // Prompt for a meaningful group name
+  const defaultName = `Group ${reconcileGroups.length+1} (${reconcilePending[0].code} +${reconcilePending.length-1} more)`;
+  const name = (prompt("Enter a name for this reconciliation group:", defaultName) || "").trim() || defaultName;
+
+  reconcileGroups.push({ name, codes: reconcilePending.map(p=>p.code) });
+  reconcilePending.length = 0;
   refreshReconcilePending();
   refreshReconcileGroupsList();
-  document.getElementById("rp-search").value="";
-  document.getElementById("rp-search-results").innerHTML="";
+  document.getElementById("rp-search").value = "";
+  document.getElementById("rp-search-results").innerHTML = "";
+
+  // Save to localStorage so groups persist across sessions
+  saveReconcileGroups();
+
+  // Re-render current page so reconciliation takes effect immediately
+  if (rawDf.length) renderPage(currentPage);
 }
 
 function refreshReconcileGroupsList() {
-  const el=document.getElementById("rp-groups-list");
-  if (!reconcileGroups.length) { el.innerHTML=`<div style="color:var(--dim);font-size:0.78rem;padding:0.5rem">No link groups created yet.</div>`; return; }
-  el.innerHTML=reconcileGroups.map((g,i)=>`
+  const el = document.getElementById("rp-groups-list");
+  if (!reconcileGroups.length) {
+    el.innerHTML=`<div style="color:var(--dim);font-size:0.78rem;padding:0.5rem">No link groups created yet.</div>`;
+    return;
+  }
+
+  // FIX Bug 2: Use event delegation on the container instead of per-button listeners
+  // This avoids stale index issues after deletes
+  el.innerHTML = reconcileGroups.map((g, i) => `
     <div class="rp-group-card">
       <div class="rp-group-header">
-        <span class="rp-group-name">🔗 ${g.name}</span>
-        <button class="rp-group-del" data-idx="${i}">Delete</button>
+        <span class="rp-group-name">🔗 ${escHtml(g.name)}</span>
+        <div style="display:flex;gap:0.4rem;align-items:center">
+          <span style="font-size:0.65rem;color:var(--dim)">${g.codes.length} codes · primary: <span style="color:var(--purple)">${escHtml(g.codes[0])}</span></span>
+          <button class="rp-group-del" data-group-idx="${i}">Delete</button>
+        </div>
       </div>
-      <div class="rp-group-codes">${g.codes.map(c=>`<span class="rp-code-tag">${c}</span>`).join("")}</div>
+      <div class="rp-group-codes">${g.codes.map((c,ci)=>`<span class="rp-code-tag" title="${ci===0?'Primary code':'Alias'}">${escHtml(c)}${ci===0?' ★':''}</span>`).join("")}</div>
     </div>`).join("");
-  document.querySelectorAll(".rp-group-del").forEach(btn=>{
-    btn.addEventListener("click",()=>{
-      reconcileGroups.splice(parseInt(btn.dataset.idx),1);
+
+  // Single delegated listener on the container — no stale index issues
+  el.onclick = e => {
+    const btn = e.target.closest(".rp-group-del");
+    if (!btn) return;
+    const idx = parseInt(btn.dataset.groupIdx);
+    if (!isNaN(idx)) {
+      reconcileGroups.splice(idx, 1);
+      saveReconcileGroups();
       refreshReconcileGroupsList();
-    });
-  });
+      if (rawDf.length) renderPage(currentPage);
+    }
+  };
+}
+
+// ── Persistence ──────────────────────────────────────────────────────────
+function saveReconcileGroups() {
+  try { localStorage.setItem("pharmatrack_reconcile", JSON.stringify(reconcileGroups)); } catch(e) {}
+}
+function loadReconcileGroups() {
+  try {
+    const saved = localStorage.getItem("pharmatrack_reconcile");
+    if (saved) reconcileGroups = JSON.parse(saved);
+  } catch(e) { reconcileGroups = []; }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -966,6 +1090,9 @@ function renderPage(id) {
 // EVENT LISTENERS
 // ═══════════════════════════════════════════════════════════════════════════
 document.addEventListener("DOMContentLoaded",()=>{
+  // Load persisted reconcile groups before anything else
+  loadReconcileGroups();
+
   // Nav
   document.querySelectorAll(".nav-btn[data-page]").forEach(btn=>{
     btn.addEventListener("click",()=>renderPage(btn.dataset.page));
