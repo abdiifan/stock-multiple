@@ -70,7 +70,13 @@ function loadFile(file) {
       if (missing.length) { showError(`Missing columns: ${missing.join(", ")}`); return; }
 
       // Helper: exclude non-medical material codes matching pattern X0000… (any digit followed by 0000)
-      const isNonMedicalCode = code => /^\d0000/.test(String(code).trim());
+      // Excel may parse large codes as floats/scientific notation — use Math.round to get full integer string
+      const isNonMedicalCode = code => {
+        let s = String(code).trim();
+        // Handle scientific notation (e.g. 7e9 or 7.0000002e9)
+        if (/e/i.test(s)) s = Math.round(Number(s)).toString();
+        return /^\d0000/.test(s);
+      };
 
       let df = trimmed
         .filter(r => String(r["Special Stock Type"]).trim() !== "Q")
