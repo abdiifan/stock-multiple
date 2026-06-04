@@ -501,9 +501,11 @@ function renderQC() {
 function renderBranch() {
   const pf = pageFilters.branch;
   document.getElementById("branch-filter-mg").value = pf.mg||"";
-  // FIX 5: apply reconciliation consistently — was reading rawDf directly
-  const baseDf = applyReconciliationToData(rawDf);
-  const df = pf.mg ? baseDf.filter(r=>r["Material Group Name"]===pf.mg) : baseDf;
+  // FIX 3: Use applyPageFilter("branch") so active Plant/MG filter is respected,
+  // consistent with every other page. Was calling applyReconciliationToData(rawDf)
+  // directly, which ignored the plant filter entirely.
+  const baseDf = applyPageFilter("branch");
+  const df = baseDf; // applyPageFilter already applies pf.mg filter
 
   const plants=[...new Set(df.map(r=>String(r["Plant"]).toUpperCase()))];
   let centralCode,centralName;
@@ -837,12 +839,16 @@ function renderFlow() {
 // DATA PREVIEW
 // ═══════════════════════════════════════════════════════════════════════════
 function renderPreview() {
-  filtDf = rawDf;
+  // FIX 2: Use reconciled data — was rawDf, so converted source materials were
+  // still visible in the preview table with original (unconverted) quantities.
+  filtDf = applyReconciliationToData(rawDf);
   populatePreviewFilters();
   renderPreviewTable();
 }
 
 function populatePreviewFilters() {
+  // Populate filter dropdowns from rawDf so all original plant/group options
+  // remain available regardless of reconciliation state.
   function fill(id, key, excludeFn) {
     const sel = document.getElementById(id); if (!sel) return;
     const vals = [...new Set(rawDf.map(r=>r[key]))]
@@ -857,11 +863,13 @@ function populatePreviewFilters() {
 }
 
 function applyPreviewFilters() {
+  // FIX 2 (cont.): filter from reconciled base, not rawDf
+  const baseDf = applyReconciliationToData(rawDf);
   const getSelected=id=>[...document.querySelectorAll(`#${id} option:checked`)].map(o=>o.value);
   const plants=getSelected("filter-plant");
   const mgs=getSelected("filter-mg");
   const mgnames=getSelected("filter-mgname");
-  filtDf=rawDf.filter(r=>
+  filtDf=baseDf.filter(r=>
     (!plants.length||plants.includes(r["Plant Name"]))&&
     (!mgs.length||mgs.includes(r["Material Group Name"]))&&
     (!mgnames.length||mgnames.includes(r["Material Group Name"]))
@@ -1000,6 +1008,18 @@ function applyReconciliationToData(df) {
     }
   });
 
+  // FIX 1: Recompute derived totals after merge — individual cols were scaled/summed
+  // but Total Qty and Total Value were never recalculated, causing stale values in
+  // all KPIs, charts, and tables.
+  merged.forEach(row => {
+    row["Total Qty"] = (row["Unrestricted Stock"] || 0)
+                     + (row["Stock in Transit"] || 0)
+                     + (row["Stock in Quality Inspection"] || 0);
+    row["Total Value"] = (row["Value of Unrestricted Stock"] || 0)
+                       + (row["Value of Stock in Transit"] || 0)
+                       + (row["Value of Stock in Quality Inspection"] || 0);
+  });
+
   return merged;
 }
 
@@ -1082,7 +1102,10 @@ function rpSearch(query, resultsElId, onSelect) {
   if (!query.trim() || !rawDf.length) { el.innerHTML = ""; return; }
   const q = query.toLowerCase();
   const seen = new Set();
-  const matches = rawDf.filter(r => {
+  // FIX 4: Search the reconciled view so source materials that have already been
+  // converted don't appear as valid targets, preventing circular/conflicting rules.
+  const searchBase = applyReconciliationToData(rawDf);
+  const matches = searchBase.filter(r => {
     const c = String(r["Material"]||""), d = String(r["Material Description"]||"");
     if (seen.has(c)) return false;
     if (c.toLowerCase().includes(q) || d.toLowerCase().includes(q)) { seen.add(c); return true; }
