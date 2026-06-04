@@ -32,7 +32,8 @@ body { display: flex; }
 
 /* ── BRAND ── */
 .brand { display: flex; align-items: center; gap: 0.7rem; padding-bottom: 1.4rem; }
-.brand-icon { font-size: 1.5rem; }
+.brand-icon { font-size: 1.5rem; display:flex; align-items:center; }
+.brand-icon img { height: 44px; width: auto; display: block; }
 .brand-name { font-size: 1.2rem; font-weight: 700; color: var(--blue); letter-spacing: -0.02em; }
 .brand-sub  { font-size: 0.62rem; color: var(--dim); letter-spacing: 0.07em; margin-top: 1px; }
 
@@ -67,7 +68,8 @@ body { display: flex; }
 
 /* ── LANDING ── */
 #landingView { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 75vh; text-align: center; }
-.landing-icon  { font-size: 4rem; margin-bottom: 1.2rem; }
+.landing-logo { margin-bottom: 1.2rem; display:flex; justify-content:center; }
+.landing-logo img { height: 90px; width: auto; display: block; }
 .landing-title { font-size: 1.9rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 0.5rem; }
 .landing-desc  { font-size: 0.95rem; color: var(--dim); max-width: 440px; line-height: 1.7; margin-bottom: 1.8rem; }
 .landing-features { display: flex; gap: 1.2rem; flex-wrap: wrap; justify-content: center; }
