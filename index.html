@@ -259,6 +259,20 @@
       <button class="apply-btn small" id="qc-filter-apply">Apply</button>
       <button class="apply-btn secondary small" id="qc-filter-clear">Clear</button>
     </div>
+
+    <!-- Material Search (mirrors Expiry Watchlist lookup) -->
+    <div class="chart-box full" style="margin-bottom:1rem">
+      <div class="section-header" style="margin-bottom:0.4rem">🔍 Material QC Lookup</div>
+      <div style="color:var(--muted);font-size:0.78rem;margin-bottom:0.75rem">Search any material to see all its QC stock across plants and batches</div>
+      <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-bottom:0.75rem">
+        <input id="qc-search-input" type="text" placeholder="Type material code or name…"
+          style="flex:1;min-width:220px;max-width:400px;padding:0.45rem 0.75rem;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:0.82rem;outline:none" />
+        <button class="apply-btn small" id="qc-search-btn">Search</button>
+        <button class="apply-btn secondary small" id="qc-search-clear">Clear</button>
+      </div>
+      <div id="qc-search-results"></div>
+    </div>
+
     <div class="kpi-row" id="qc-kpis"></div>
     <div class="chart-box full"><div class="section-header">QC Quantity &amp; Value by Plant</div><div id="chart-qc-plant"></div></div>
     <div class="section-header" style="margin-top:1.5rem">Detailed QC Items</div>
