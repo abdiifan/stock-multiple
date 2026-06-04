@@ -930,32 +930,6 @@ function renderFlow() {
     ? buildTable(reorderRows,reorderCols,()=>"row-amber")
     : `<div class="alert-info">✓ No reorder alerts — all materials have available unrestricted stock.</div>`;
 
-  // Stock levels by plant — stacked bar qty
-  const plantAgg=sortBy(groupBy(df,"Plant Name",[["avail","Unrestricted Stock"],["transit","Stock in Transit"],["qc","Stock in Quality Inspection"],["availVal","Value of Unrestricted Stock"],["transitVal","Value of Stock in Transit"]]),"avail");
-  Plotly.newPlot("chart-stock-levels",[
-    {type:"bar",name:"Available (Qty)",x:plantAgg.map(r=>r["Plant Name"]),y:plantAgg.map(r=>r.avail),marker:{color:"#3fb950"},hovertemplate:"<b>%{x}</b><br>Available: %{y:,.0f}<extra></extra>"},
-    {type:"bar",name:"In Transit (Qty)",x:plantAgg.map(r=>r["Plant Name"]),y:plantAgg.map(r=>r.transit),marker:{color:"#d29922"},hovertemplate:"<b>%{x}</b><br>Transit: %{y:,.0f}<extra></extra>"},
-    {type:"bar",name:"In QC (Qty)",x:plantAgg.map(r=>r["Plant Name"]),y:plantAgg.map(r=>r.qc),marker:{color:"#f85149"},hovertemplate:"<b>%{x}</b><br>QC: %{y:,.0f}<extra></extra>"},
-  ],pl({barmode:"stack",height:300,margin:{l:20,r:20,t:20,b:80}}),PLOTLY_CONFIG);
-
-  // Transfers table (transit items with destination)
-  const transferData = df.filter(r=>r["Stock in Transit"]>0);
-  const transferCols=[
-    {key:"Material",label:"Material"},{key:"Material Description",label:"Description"},
-    {key:"Material Group Name",label:"Material Group"},{key:"Plant Name",label:"Destination Plant"},
-    {key:"Stock in Transit",label:"Transit Qty",fmt:fmtQty,rawKey:"Stock in Transit",cellClass:"col-qty"},
-    {key:"Value of Stock in Transit",label:"Transit Value (ETB)",fmt:fmtETB,rawKey:"Value of Stock in Transit",cellClass:"col-val"},
-  ];
-  document.getElementById("transfer-table-wrap").innerHTML = transferData.length
-    ? buildTable(sortBy([...transferData],"Value of Stock in Transit"),transferCols)
-    : `<div class="alert-info">No active transfers found.</div>`;
-
-  // Inbound vs available
-  Plotly.newPlot("chart-inbound-outbound",[
-    {type:"bar",name:"Available Value (ETB)",x:plantAgg.map(r=>r["Plant Name"]),y:plantAgg.map(r=>r.availVal),marker:{color:"#3fb950"},hovertemplate:"<b>%{x}</b><br>Available: ETB %{y:,.0f}<extra></extra>"},
-    {type:"bar",name:"Inbound Transit (ETB)",x:plantAgg.map(r=>r["Plant Name"]),y:plantAgg.map(r=>r.transitVal),marker:{color:"#d29922"},hovertemplate:"<b>%{x}</b><br>Inbound: ETB %{y:,.0f}<extra></extra>"},
-  ],pl({barmode:"group",height:300,margin:{l:20,r:20,t:20,b:80}}),PLOTLY_CONFIG);
-
   const flowForDl = df.map(r=>({...r}));
   const flowDlCols=[
     {key:"Material",label:"Material"},{key:"Material Description",label:"Description"},
