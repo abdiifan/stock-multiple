@@ -401,8 +401,9 @@ function renderExpiry() {
   const today  = new Date();
   const cutoff = new Date(today); cutoff.setMonth(cutoff.getMonth()+months);
   const valid   = baseDf.filter(r=>r._expiry instanceof Date && !isNaN(r._expiry));
-  const expiring= valid.filter(r=>r._expiry>=today&&r._expiry<=cutoff);
-  const expired = valid.filter(r=>r._expiry<today);
+  // Exclude zero-quantity rows throughout — phantom SAP records with no physical stock
+  const expiring= valid.filter(r=>r._expiry>=today&&r._expiry<=cutoff&&(r["Unrestricted Stock"]||0)>0);
+  const expired = valid.filter(r=>r._expiry<today);  // zero-qty filtered later in expired section
 
   setKpis("expiry-kpis",[
     ["Expiring in Window", String(expiring.length), `Items within next ${months} months`,"amber"],
@@ -441,10 +442,15 @@ function renderExpiry() {
   document.getElementById("btn-dl-expiry").onclick=()=>downloadCSV(expRows,expCols,`expiry_${months}months.csv`);
   document.getElementById("btn-dl-expiry-xlsx").onclick=()=>downloadExcel(expRows,expCols,`expiry_${months}months.xlsx`);
 
-  if (expired.length) {
+  // Exclude zero-quantity rows — no physical stock to action
+  const expiredWithStock = expired.filter(r => (r["Unrestricted Stock"] || 0) > 0);
+  const expiredZeroQty   = expired.length - expiredWithStock.length;
+
+  if (expiredWithStock.length) {
     document.getElementById("expired-section").style.display="block";
-    document.getElementById("expired-header").textContent=`🔴 Already Expired Items (${expired.length})`;
-    const expiredRows=expired.map(r=>({...r,_expiryStr:r._expiry?r._expiry.toISOString().slice(0,10):""}));
+    const zeroNote = expiredZeroQty ? ` <span style="font-size:0.72rem;color:var(--muted);font-weight:400">(${expiredZeroQty} zero-qty records hidden)</span>` : "";
+    document.getElementById("expired-header").innerHTML=`🔴 Already Expired Items (${expiredWithStock.length})${zeroNote}`;
+    const expiredRows=expiredWithStock.map(r=>({...r,_expiryStr:r._expiry?r._expiry.toISOString().slice(0,10):""}));
     document.getElementById("expired-table-wrap").innerHTML=buildTable(expiredRows,[
       {key:"Material",label:"Material"},{key:"Material Description",label:"Description"},
       {key:"Material Group Name",label:"Material Group"},{key:"Plant Name",label:"Plant"},
