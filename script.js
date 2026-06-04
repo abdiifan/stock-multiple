@@ -591,6 +591,71 @@ function clearExpirySearch() {
   document.getElementById("expiry-search-results").innerHTML = "";
 }
 
+// ── MATERIAL QC LOOKUP ────────────────────────────────────────────────────
+// Searches ALL QC stock records for a material regardless of active filters.
+function renderQCSearch() {
+  const query = document.getElementById("qc-search-input").value.trim().toLowerCase();
+  const resultsEl = document.getElementById("qc-search-results");
+
+  if (!query) { resultsEl.innerHTML = ""; return; }
+  if (!rawDf.length) { resultsEl.innerHTML = `<div class="alert-info">No data loaded yet.</div>`; return; }
+
+  const baseDf = applyReconciliationToData(rawDf);
+
+  const matches = baseDf.filter(r => {
+    const code = String(r["Material"] || "").toLowerCase();
+    const desc = String(r["Material Description"] || "").toLowerCase();
+    const hasQC = (r["Stock in Quality Inspection"] || 0) > 0;
+    return hasQC && (code.includes(query) || desc.includes(query));
+  });
+
+  if (!matches.length) {
+    resultsEl.innerHTML = `<div class="alert-info">No QC stock found matching "<b>${escHtml(query)}</b>".</div>`;
+    return;
+  }
+
+  const today = new Date();
+  const annotated = matches.map(r => {
+    const expiryStr = r._expiry ? r._expiry.toISOString().slice(0, 10) : "—";
+    let daysLeft = null, statusLabel = "No Expiry Date", statusClass = "";
+    if (r._expiry instanceof Date && !isNaN(r._expiry)) {
+      daysLeft = Math.floor((r._expiry - today) / 86400000);
+      if      (daysLeft < 0)        { statusLabel = `Expired ${Math.abs(daysLeft)}d ago`; statusClass = "row-red"; }
+      else if (daysLeft <= 30)      { statusLabel = `${daysLeft}d left`;                  statusClass = "row-red"; }
+      else if (daysLeft <= 180)     { statusLabel = `${daysLeft}d left`;                  statusClass = "row-amber"; }
+      else                          { statusLabel = `${daysLeft}d left`;                  statusClass = ""; }
+    }
+    return { ...r, _expiryStr: expiryStr, _daysLeft: daysLeft ?? 99999, _statusLabel: statusLabel, _statusClass: statusClass };
+  });
+
+  const sorted = annotated.sort((a, b) => a._daysLeft - b._daysLeft);
+  const uniqueMats = [...new Set(sorted.map(r => r["Material"]))];
+
+  const summary = `<div style="font-size:0.78rem;color:var(--muted);margin-bottom:0.5rem">
+    Found <b style="color:var(--text)">${sorted.length}</b> QC record(s) across
+    <b style="color:var(--text)">${uniqueMats.length}</b> material code(s)
+  </div>`;
+
+  const cols = [
+    { key: "Material",                              label: "Material" },
+    { key: "Material Description",                  label: "Description" },
+    { key: "Plant Name",                            label: "Plant" },
+    { key: "Description of Storage Location",       label: "Storage Location" },
+    { key: "Batch",                                 label: "Batch" },
+    { key: "_expiryStr",                            label: "Shelf Life Expiry" },
+    { key: "_statusLabel",                          label: "Expiry Status" },
+    { key: "Stock in Quality Inspection",           label: "QC Qty",      fmt: fmtQty, rawKey: "Stock in Quality Inspection",           cellClass: "col-qty" },
+    { key: "Value of Stock in Quality Inspection",  label: "QC Value (ETB)", fmt: fmtETB, rawKey: "Value of Stock in Quality Inspection", cellClass: "col-val" },
+  ];
+
+  resultsEl.innerHTML = summary + buildTable(sorted, cols, r => r._statusClass);
+}
+
+function clearQCSearch() {
+  document.getElementById("qc-search-input").value = "";
+  document.getElementById("qc-search-results").innerHTML = "";
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // QC
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1381,6 +1446,13 @@ document.addEventListener("DOMContentLoaded",()=>{
   document.getElementById("expiry-search-clear").addEventListener("click", clearExpirySearch);
   document.getElementById("expiry-search-input").addEventListener("keydown", e => {
     if (e.key === "Enter") renderExpirySearch();
+  });
+
+  // Material QC lookup
+  document.getElementById("qc-search-btn").addEventListener("click", renderQCSearch);
+  document.getElementById("qc-search-clear").addEventListener("click", clearQCSearch);
+  document.getElementById("qc-search-input").addEventListener("keydown", e => {
+    if (e.key === "Enter") renderQCSearch();
   });
 
   // Preview filters
