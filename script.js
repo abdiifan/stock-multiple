@@ -534,18 +534,20 @@ function renderBranch() {
   df.forEach(r=>{
     const mat=r["Material"],pln=r["Plant Name"];
     if (!matPlantMap[mat]) matPlantMap[mat]={desc:r["Material Description"],group:r["Material Group Name"]};
-    if (!matPlantMap[mat][pln]) matPlantMap[mat][pln]={Unrestricted:0,Transit:0,QC:0,TotalValue:0,TotalQty:0,UnrestrictedQty:0};
+    if (!matPlantMap[mat][pln]) matPlantMap[mat][pln]={Unrestricted:0,Transit:0,QC:0,TotalValue:0,TotalQty:0,UnrestrictedQty:0,TransitQty:0,QCQty:0};
     matPlantMap[mat][pln].Unrestricted+=r["Value of Unrestricted Stock"];
     matPlantMap[mat][pln].Transit     +=r["Value of Stock in Transit"];
     matPlantMap[mat][pln].QC          +=r["Value of Stock in Quality Inspection"];
     matPlantMap[mat][pln].TotalValue  +=r["Total Value"];
     matPlantMap[mat][pln].TotalQty    +=r["Total Qty"];
     matPlantMap[mat][pln].UnrestrictedQty+=r["Unrestricted Stock"];
+    matPlantMap[mat][pln].TransitQty  +=r["Stock in Transit"];
+    matPlantMap[mat][pln].QCQty       +=r["Stock in Quality Inspection"];
   });
 
   const tabsHtml=`
     <div class="branch-tabs" id="branch-tabs">
-      <button class="branch-tab active" data-tab="value">📊 Total Value Comparison</button>
+      <button class="branch-tab active" data-tab="value">📊 Total Value &amp; Quantity</button>
       <button class="branch-tab" data-tab="material">🔬 Line-Item (Material Across Branches)</button>
     </div>
     <div id="branch-tab-value"></div>
@@ -591,22 +593,7 @@ function renderBranch() {
       {key:"Items",label:"# Line Items"},
     ];
     wrap.innerHTML=`
-      <div id="branch-table-wrap-inner" style="margin-bottom:1rem">${buildTable(compareDf,bCols,r=>r.PlantName===centralName?"row-blue":"")}</div>
-      <div class="chart-box full" style="margin-top:1rem"><div class="section-header">Value Comparison by Stock Type</div><div id="chart-branch-grouped"></div></div>
-      <div class="chart-box full"><div class="section-header">Available Quantity vs Transit Quantity</div><div id="chart-branch-qty"></div></div>`;
-
-    const types=["Unrestricted","Transit","QC"];
-    const colors2={Unrestricted:"#58a6ff",Transit:"#d29922",QC:"#f85149"};
-    Plotly.newPlot("chart-branch-grouped",types.map(t=>({
-      type:"bar",name:t,x:compareDf.map(r=>r.PlantName),y:compareDf.map(r=>r[t]),
-      marker:{color:colors2[t]},hovertemplate:`<b>%{x}</b> · ${t}<br>ETB %{y:,.0f}<extra></extra>`,
-    })),pl({barmode:"group",height:300}),PLOTLY_CONFIG);
-
-    const qtyTypes={UnrestrictedQty:"#3fb950",TransitQty:"#d29922",QCQty:"#f85149"};
-    Plotly.newPlot("chart-branch-qty",Object.entries(qtyTypes).map(([k,col])=>({
-      type:"bar",name:k.replace("Qty",""),x:compareDf.map(r=>r.PlantName),y:compareDf.map(r=>r[k]),
-      marker:{color:col},hovertemplate:`<b>%{x}</b><br>Qty: %{y:,.0f}<extra></extra>`,
-    })),pl({barmode:"group",height:280}),PLOTLY_CONFIG);
+      <div id="branch-table-wrap-inner" style="margin-bottom:1rem">${buildTable(compareDf,bCols,r=>r.PlantName===centralName?"row-blue":"")}</div>`;
 
     document.getElementById("btn-dl-branch-csv").onclick=()=>downloadCSV(compareDf,bCols,"branch_comparison.csv");
     document.getElementById("btn-dl-branch-xlsx").onclick=()=>downloadExcel(compareDf,bCols,"branch_comparison.xlsx");
@@ -640,6 +627,8 @@ function renderBranch() {
               <option value="QC">QC Value (ETB)</option>
               <option value="TotalQty">Total Quantity</option>
               <option value="UnrestrictedQty">Available Quantity</option>
+              <option value="TransitQty">Transit Quantity</option>
+              <option value="QCQty">QC Quantity</option>
             </select>
           </div>
           <div>
@@ -702,21 +691,8 @@ function renderBranch() {
 
       const top=materials.slice(0,30);
       const chartWrap=document.getElementById("mat-chart-wrap");
-      if (!top.length) { chartWrap.innerHTML=`<div class="alert-info">No materials found.</div>`; document.getElementById("mat-table-wrap").innerHTML=""; return; }
-
-      if (top.length===1) {
-        const info=top[0];
-        chartWrap.innerHTML=`<div class="chart-box full"><div class="section-header">${info.desc} (${info.mat}) — ${metric} across branches</div><div id="chart-mat-detail"></div></div>`;
-        Plotly.newPlot("chart-mat-detail",[{type:"bar",x:allPlantNames,y:allPlantNames.map(pn=>info.plantData[pn]||0),marker:{color:allPlantNames.map((_,i)=>COLORWAY[i%COLORWAY.length])},hovertemplate:`<b>%{x}</b><br>${metric}: %{y:,.0f}<extra></extra>`}],pl({height:320}),PLOTLY_CONFIG);
-      } else {
-        const plantTraces=allPlantNames.map((pn,i)=>({
-          type:"bar",name:pn,x:top.map(m=>m.mat),y:top.map(m=>m.plantData[pn]||0),
-          customdata:top.map(m=>m.desc),marker:{color:COLORWAY[i%COLORWAY.length]},
-          hovertemplate:`<b>%{customdata}</b><br>${pn}<br>${metric}: %{y:,.0f}<extra></extra>`,
-        }));
-        chartWrap.innerHTML=`<div class="chart-box full"><div class="section-header">Top ${top.length} Materials — ${metric} by Branch</div><div id="chart-mat-multi"></div></div>`;
-        Plotly.newPlot("chart-mat-multi",plantTraces,pl({barmode:"group",height:Math.max(360,20*top.length),xaxis:{...PLOTLY_LAYOUT.xaxis,tickangle:-40}}),PLOTLY_CONFIG);
-      }
+      if (!top.length) { chartWrap.innerHTML=""; document.getElementById("mat-table-wrap").innerHTML=`<div class="alert-info">No materials found.</div>`; return; }
+      chartWrap.innerHTML="";
 
       const colDefs=[
         {key:"mat",label:"Material"},
