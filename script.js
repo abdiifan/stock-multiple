@@ -137,7 +137,10 @@ function populateAllFilters() {
   mgNameSelectors.forEach(id => {
     const el = document.getElementById(id);
     if (!el) return;
-    const vals = [...new Set(rawDf.map(r=>r["Material Group Name"]))].filter(Boolean).sort();
+    const vals = [...new Set(rawDf.map(r=>r["Material Group Name"]))]
+      .filter(Boolean)
+      .filter(name => !isNonMedicalGroup(name))
+      .sort();
     el.innerHTML = vals.map(v=>`<option value="${v}">${v}</option>`).join("");
   });
 }
@@ -385,6 +388,7 @@ function renderExpiry() {
     {key:"Material Description",label:"Description"},
     {key:"Material Group Name",label:"Material Group"},
     {key:"Plant Name",label:"Plant"},
+    {key:"Description of Storage Location",label:"Storage Location"},
     {key:"_expiryStr",label:"Expiry Date"},
     {key:"Unrestricted Stock",label:"Qty",fmt:fmtQty,rawKey:"Unrestricted Stock",cellClass:"col-qty"},
     {key:"Value of Unrestricted Stock",label:"Value (ETB)",fmt:fmtETB,rawKey:"Value of Unrestricted Stock",cellClass:"col-val"},
@@ -437,10 +441,12 @@ function renderQC() {
   const qcCols=[
     {key:"Material",label:"Material"},{key:"Material Description",label:"Description"},
     {key:"Material Group Name",label:"Material Group"},{key:"Plant Name",label:"Plant"},
+    {key:"Description of Storage Location",label:"Storage Location"},
+    {key:"_expiryStr",label:"Shelf Life Expiry"},
     {key:"Stock in Quality Inspection",label:"QC Qty",fmt:fmtQty,rawKey:"Stock in Quality Inspection",cellClass:"col-qty"},
     {key:"Value of Stock in Quality Inspection",label:"QC Value (ETB)",fmt:fmtETB,rawKey:"Value of Stock in Quality Inspection",cellClass:"col-val"},
   ];
-  const qcRows=sortBy([...df],"Value of Stock in Quality Inspection");
+  const qcRows=sortBy([...df].map(r=>({...r,_expiryStr:r._expiry?r._expiry.toISOString().slice(0,10):""})),"Value of Stock in Quality Inspection");
   document.getElementById("qc-table-wrap").innerHTML=buildTable(qcRows,qcCols,r=>r["Value of Stock in Quality Inspection"]>10000?"row-red":"");
   document.getElementById("btn-dl-qc").onclick=()=>downloadCSV(qcRows,qcCols,"qc_inspection.csv");
   document.getElementById("btn-dl-qc-xlsx").onclick=()=>downloadExcel(qcRows,qcCols,"qc_inspection.xlsx");
