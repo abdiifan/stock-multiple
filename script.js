@@ -456,6 +456,83 @@ function renderExpiry() {
   } else { document.getElementById("expired-section").style.display="none"; }
 }
 
+// ── MATERIAL EXPIRY LOOKUP ────────────────────────────────────────────────
+// Searches ALL batches of a material regardless of expiry window.
+function renderExpirySearch() {
+  const query = document.getElementById("expiry-search-input").value.trim().toLowerCase();
+  const resultsEl = document.getElementById("expiry-search-results");
+
+  if (!query) {
+    resultsEl.innerHTML = "";
+    return;
+  }
+  if (!rawDf.length) {
+    resultsEl.innerHTML = `<div class="alert-info">No data loaded yet.</div>`;
+    return;
+  }
+
+  const today = new Date();
+  const baseDf = applyReconciliationToData(rawDf);
+
+  // Match on material code or description (case-insensitive)
+  const matches = baseDf.filter(r => {
+    const code = String(r["Material"] || "").toLowerCase();
+    const desc = String(r["Material Description"] || "").toLowerCase();
+    return code.includes(query) || desc.includes(query);
+  });
+
+  if (!matches.length) {
+    resultsEl.innerHTML = `<div class="alert-info">No materials found matching "<b>${escHtml(query)}</b>".</div>`;
+    return;
+  }
+
+  // Annotate each row with days-to-expiry and status
+  const annotated = matches.map(r => {
+    const expiryStr = r._expiry ? r._expiry.toISOString().slice(0, 10) : "—";
+    let daysLeft = null;
+    let statusLabel = "No Expiry Date";
+    let statusClass = "";
+    if (r._expiry instanceof Date && !isNaN(r._expiry)) {
+      daysLeft = Math.floor((r._expiry - today) / 86400000);
+      if (daysLeft < 0)        { statusLabel = `Expired ${Math.abs(daysLeft)}d ago`; statusClass = "row-red"; }
+      else if (daysLeft <= 30)  { statusLabel = `${daysLeft}d left`;                  statusClass = "row-red"; }
+      else if (daysLeft <= 90)  { statusLabel = `${daysLeft}d left`;                  statusClass = "row-amber"; }
+      else if (daysLeft <= 180) { statusLabel = `${daysLeft}d left`;                  statusClass = "row-amber"; }
+      else                      { statusLabel = `${daysLeft}d left`;                  statusClass = ""; }
+    }
+    return { ...r, _expiryStr: expiryStr, _daysLeft: daysLeft ?? 99999, _statusLabel: statusLabel, _statusClass: statusClass };
+  });
+
+  // Sort: expired first (most overdue), then soonest expiry, then no-date last
+  const sorted = annotated.sort((a, b) => a._daysLeft - b._daysLeft);
+
+  // Unique materials found
+  const uniqueMats = [...new Set(sorted.map(r => r["Material"]))];
+  const summary = `<div style="font-size:0.78rem;color:var(--muted);margin-bottom:0.5rem">
+    Found <b style="color:var(--text)">${sorted.length}</b> batch/location record(s) across
+    <b style="color:var(--text)">${uniqueMats.length}</b> material code(s)
+  </div>`;
+
+  const cols = [
+    { key: "Material",                       label: "Material" },
+    { key: "Material Description",           label: "Description" },
+    { key: "Plant Name",                     label: "Plant" },
+    { key: "Description of Storage Location",label: "Storage Location" },
+    { key: "Batch",                          label: "Batch" },
+    { key: "_expiryStr",                     label: "Expiry Date" },
+    { key: "_statusLabel",                   label: "Status" },
+    { key: "Unrestricted Stock",             label: "Avail Qty",   fmt: fmtQty, rawKey: "Unrestricted Stock",             cellClass: "col-qty" },
+    { key: "Value of Unrestricted Stock",    label: "Value (ETB)", fmt: fmtETB, rawKey: "Value of Unrestricted Stock",    cellClass: "col-val" },
+  ];
+
+  resultsEl.innerHTML = summary + buildTable(sorted, cols, r => r._statusClass);
+}
+
+function clearExpirySearch() {
+  document.getElementById("expiry-search-input").value = "";
+  document.getElementById("expiry-search-results").innerHTML = "";
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // QC
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1265,6 +1342,13 @@ document.addEventListener("DOMContentLoaded",()=>{
   // Expiry window
   document.getElementById("expiry-window-group").addEventListener("change",()=>{
     if (rawDf.length&&currentPage==="expiry") renderExpiry();
+  });
+
+  // Material expiry lookup
+  document.getElementById("expiry-search-btn").addEventListener("click", renderExpirySearch);
+  document.getElementById("expiry-search-clear").addEventListener("click", clearExpirySearch);
+  document.getElementById("expiry-search-input").addEventListener("keydown", e => {
+    if (e.key === "Enter") renderExpirySearch();
   });
 
   // Preview filters
