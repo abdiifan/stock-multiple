@@ -16,7 +16,8 @@ const REQUIRED_COLUMNS = [
 
 const COLORWAY = ["#58a6ff","#3fb950","#d29922","#f85149","#a371f7","#79c0ff","#56d364","#e3b341","#ff7b72","#d2a8ff","#ffa657","#70d9a0"];
 
-// Exclusion rules loaded from filters.js (must be included before this script)
+// NOTE: Exclusion rules (isNonMedicalCode, isNonMedicalGroup) are loaded from
+// filters.js which MUST be included before this script in the HTML.
 const PLOTLY_LAYOUT = {
   paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
   font: { family: "IBM Plex Sans", color: "#8b949e", size: 12 },
@@ -51,11 +52,23 @@ let reconcilePending = []; // [{code, desc}]
 const fmtETB = v => `ETB ${Number(v || 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
 const fmtQty = v => Number(v || 0).toLocaleString("en-US", { maximumFractionDigits: 0 });
 
+// ── HTML ESCAPE (used by buildTable and reconciliation UI) ──────────────────
+function escHtml(str) {
+  return String(str ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
 // ── LOAD & PROCESS EXCEL ───────────────────────────────────────────────────
 function loadFile(file) {
+  // Show loading state immediately before the synchronous XLSX parse blocks the UI
+  const statusEl = document.getElementById("fileStatus");
+  statusEl.style.display = "block";
+  statusEl.innerHTML = `<div class="status-ok">⏳ LOADING…</div><div class="status-name">Parsing ${file.name}</div>`;
+
   const reader = new FileReader();
   reader.onload = e => {
-    try {
+    // Defer heavy work one tick so the loading message renders first
+    setTimeout(() => {
+      try {
       const wb   = XLSX.read(new Uint8Array(e.target.result), { type: "array", cellDates: true });
       const ws   = wb.Sheets[wb.SheetNames[0]];
       const data = XLSX.utils.sheet_to_json(ws, { defval: "" });
@@ -105,7 +118,8 @@ function loadFile(file) {
       hideLanding();
       populateAllFilters();
       renderPage(currentPage);
-    } catch (err) { showError(`Could not read Excel file: ${err.message}`); }
+      } catch (err) { showError(`Could not read Excel file: ${err.message}`); }
+    }, 30); // 30 ms — enough for the browser to paint the loading state
   };
   reader.readAsArrayBuffer(file);
 }
@@ -183,13 +197,16 @@ function groupBy(data, key, aggCols) {
 function sortBy(arr, key, asc=false) { return [...arr].sort((a,b)=>asc ? a[key]-b[key] : b[key]-a[key]); }
 
 // ── TABLE BUILDER ──────────────────────────────────────────────────────────
+// Columns with raw:true may contain trusted HTML (badges etc.) — all others
+// are escaped to prevent XSS from Excel data landing in the DOM.
 function buildTable(rows, cols, rowClass, extraClass="") {
   if (!rows.length) return `<div class="alert-info">No data to display.</div>`;
-  const thead = `<thead><tr>${cols.map(c=>`<th>${c.label}</th>`).join("")}</tr></thead>`;
+  const thead = `<thead><tr>${cols.map(c=>`<th>${escHtml(c.label)}</th>`).join("")}</tr></thead>`;
   const tbody = `<tbody>${rows.map(row=>{
     const cls = rowClass ? rowClass(row) : "";
     return `<tr class="${cls}">${cols.map(c=>{
-      const val = c.fmt ? c.fmt(row[c.key]) : (row[c.key]??"");
+      const raw = c.fmt ? c.fmt(row[c.key]) : (row[c.key]??"");
+      const val = c.raw ? raw : escHtml(String(raw));
       const cellCls = c.cellClass || "";
       return `<td class="${cellCls}">${val}</td>`;
     }).join("")}</tr>`;
@@ -202,8 +219,12 @@ function downloadExcel(data, cols, filename) {
   const header = cols.map(c=>c.label);
   const rows   = data.map(row => cols.map(c => {
     const v = row[c.key];
-    if (c.rawKey) return row[c.rawKey] ?? v;
-    return c.fmt ? (row[c.rawKey ?? c.key]??0) : (v??0);
+    // Use rawKey value when available for numeric fidelity
+    const raw = c.rawKey ? (row[c.rawKey] ?? v) : v;
+    // For formatted columns return the raw number; for plain text return the value
+    // Use "" fallback (not 0) so text fields don't become 0 in Excel
+    if (c.fmt) return (typeof raw === "number") ? raw : (raw ?? "");
+    return raw ?? "";
   }));
   const wsData = [header, ...rows];
   const ws = XLSX.utils.aoa_to_sheet(wsData);
@@ -217,17 +238,32 @@ function downloadCSV(data, cols, filename) {
   const header = cols.map(c=>c.label).join(",");
   const rows   = data.map(row=>cols.map(c=>{
     let v = c.rawKey ? (row[c.rawKey]??row[c.key]??"") : (row[c.key]??"");
-    if (typeof v==="string"&&v.includes(",")) v=`"${v}"`;
+    v = String(v ?? "");
+    // FIX 2: CSV injection — prefix dangerous leading chars with single quote
+    if (/^[=+\-@\t\r]/.test(v)) v = `'${v}`;
+    // Wrap in quotes if contains comma, quote or newline
+    if (v.includes(",") || v.includes('"') || v.includes("\n")) {
+      v = `"${v.replace(/"/g, '""')}"`;
+    }
     return v;
   }).join(","));
-  const blob = new Blob([header+"\n"+rows.join("\n")],{type:"text/csv"});
+  const blob = new Blob(["\uFEFF"+header+"\n"+rows.join("\n")],{type:"text/csv;charset=utf-8"});
   const url  = URL.createObjectURL(blob);
   const a = document.createElement("a"); a.href=url; a.download=filename; a.click();
   URL.revokeObjectURL(url);
 }
 
 // ── PLOTLY LAYOUT MERGE ────────────────────────────────────────────────────
-function pl(extra={}) { return Object.assign({},PLOTLY_LAYOUT,extra); }
+// Deep-merge nested axis objects so callers can override xaxis/yaxis properties
+// without clobbering the shared PLOTLY_LAYOUT reference (Object.assign is shallow).
+function pl(extra={}) {
+  return Object.assign({}, PLOTLY_LAYOUT, extra, {
+    xaxis:  Object.assign({}, PLOTLY_LAYOUT.xaxis,  extra.xaxis  || {}),
+    yaxis:  Object.assign({}, PLOTLY_LAYOUT.yaxis,  extra.yaxis  || {}),
+    legend: Object.assign({}, PLOTLY_LAYOUT.legend, extra.legend || {}),
+    margin: Object.assign({}, PLOTLY_LAYOUT.margin, extra.margin || {}),
+  });
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // DASHBOARD
@@ -321,7 +357,7 @@ function renderTransit() {
     {key:"Plant Name",label:"Plant"},
     {key:"Stock in Transit",label:"Transit Qty",fmt:fmtQty,rawKey:"Stock in Transit",cellClass:"col-qty"},
     {key:"Value of Stock in Transit",label:"Transit Value (ETB)",fmt:fmtETB,rawKey:"Value of Stock in Transit",cellClass:"col-val"},
-    {key:"_status",label:"Status"},
+    {key:"_status",label:"Status", raw:true},
   ];
   const transitRows=sortBy([...df],"Value of Stock in Transit").map(r=>({
     ...r,
@@ -331,8 +367,9 @@ function renderTransit() {
   document.getElementById("btn-dl-transit").onclick=()=>downloadCSV(transitRows,transitCols.slice(0,-1),"transit_analysis.csv");
   document.getElementById("btn-dl-transit-xlsx").onclick=()=>downloadExcel(transitRows,transitCols.slice(0,-1),"transit_analysis.xlsx");
 
-  // HO01 section
-  const ho01=rawDf.filter(r=>r["Stock in Transit"]>0).filter(r=>String(r["Plant"]).toUpperCase()==="HO01"||String(r["Plant Name"]).toUpperCase().includes("HO01")||String(r["Plant Name"]).toUpperCase().includes("HEAD OFFICE")||String(r["Plant Name"]).toUpperCase().includes("CENTRAL"));
+  // FIX 6: use filtered df (not rawDf) so HO01 respects active plant/MG filters
+  const allTransitDf = applyPageFilter("transit");
+  const ho01=allTransitDf.filter(r=>r["Stock in Transit"]>0).filter(r=>String(r["Plant"]).toUpperCase()==="HO01"||String(r["Plant Name"]).toUpperCase().includes("HO01")||String(r["Plant Name"]).toUpperCase().includes("HEAD OFFICE")||String(r["Plant Name"]).toUpperCase().includes("CENTRAL"));
   if (ho01.length) {
     setKpis("ho01-kpis",[
       ["HO01 Transit Value",   fmtETB(ho01.reduce((s,r)=>s+r["Value of Stock in Transit"],0)),"From central hub","amber"],
@@ -459,7 +496,9 @@ function renderQC() {
 function renderBranch() {
   const pf = pageFilters.branch;
   document.getElementById("branch-filter-mg").value = pf.mg||"";
-  const df = pf.mg ? rawDf.filter(r=>r["Material Group Name"]===pf.mg) : rawDf;
+  // FIX 5: apply reconciliation consistently — was reading rawDf directly
+  const baseDf = applyReconciliationToData(rawDf);
+  const df = pf.mg ? baseDf.filter(r=>r["Material Group Name"]===pf.mg) : baseDf;
 
   const plants=[...new Set(df.map(r=>String(r["Plant"]).toUpperCase()))];
   let centralCode,centralName;
@@ -574,6 +613,8 @@ function renderBranch() {
   }
 
   // ── TAB 2: Material Across Branches ──
+  // FIX 9: initialize as false each time renderBranch runs so filter changes
+  // cause the Material tab UI (including its own MG dropdown) to rebuild correctly.
   let matTabInitialized=false;
   function renderMaterialTab() {
     const wrap=document.getElementById("branch-tab-material");
@@ -758,7 +799,7 @@ function renderFlow() {
     {key:"Stock in Transit",label:"In Transit",fmt:fmtQty,rawKey:"Stock in Transit",cellClass:"col-qty"},
     {key:"Stock in Quality Inspection",label:"In QC",fmt:fmtQty,rawKey:"Stock in Quality Inspection",cellClass:"col-qty"},
     {key:"Value of Stock in Transit",label:"Transit Value (ETB)",fmt:fmtETB,rawKey:"Value of Stock in Transit",cellClass:"col-val"},
-    {key:"_alert",label:"Alert"},
+    {key:"_alert",label:"Alert", raw:true},
   ];
   const reorderRows = reorderItems.map(r=>({...r,
     _alert: r["Stock in Transit"]>0&&r["Stock in Quality Inspection"]>0
@@ -872,7 +913,9 @@ function renderPreviewTable() {
     {key:"_expiryStr",label:"Expiry Date"},
   ];
   const rows=df.slice(0,500).map(r=>({...r,_expiryStr:r._expiry?r._expiry.toISOString().slice(0,10):""}));
-  document.getElementById("preview-table-wrap").innerHTML=buildTable(rows,cols);
+  document.getElementById("preview-table-wrap").innerHTML=
+    buildTable(rows,cols) +
+    (df.length>500 ? `<div class="alert-warning">⚠️ Showing first 500 of ${df.length.toLocaleString()} records. Apply filters to narrow results or use the Excel/CSV download for the full dataset.</div>` : "");
   document.getElementById("btn-dl-preview").onclick=()=>downloadCSV(rows,cols,"pharma_inventory_filtered.csv");
   document.getElementById("btn-dl-preview-xlsx").onclick=()=>downloadExcel(rows,cols,"pharma_inventory_filtered.xlsx");
 }
@@ -897,19 +940,24 @@ function applyReconciliationToData(df) {
   const merged = [];
   const primaryMap = {}; // primaryCode -> merged row index
 
+  // Numeric columns that get summed across reconciled rows
+  const NUM_COLS = ["Unrestricted Stock","Stock in Quality Inspection","Blocked Stock","Stock in Transit",
+    "Value of Stock in Quality Inspection","Value of Stock in Transit",
+    "Value of Unrestricted Stock","Total Value","Total Qty"];
+
   df.forEach(row => {
     const primary = getCanonicalCode(row["Material"]);
     if (primary === row["Material"]) {
-      // Not an alias, or already the primary
       const idx = primaryMap[primary];
       if (idx !== undefined) {
-        // Another row with same primary already added — aggregate
+        // Primary seen before — aggregate numeric cols only
         const target = merged[idx];
-        ["Unrestricted Stock","Stock in Quality Inspection","Blocked Stock","Stock in Transit",
-         "Value of Stock in Quality Inspection","Value of Stock in Transit",
-         "Value of Unrestricted Stock","Total Value","Total Qty"].forEach(c => {
-          target[c] = (target[c]||0) + (row[c]||0);
-        });
+        NUM_COLS.forEach(c => { target[c] = (target[c]||0) + (row[c]||0); });
+        // FIX 3: carry forward non-numeric fields if the primary row is missing them
+        if (!target["_expiry"] && row["_expiry"]) target["_expiry"] = row["_expiry"];
+        if (!target["Description of Storage Location"] && row["Description of Storage Location"])
+          target["Description of Storage Location"] = row["Description of Storage Location"];
+        if (!target["Batch"] && row["Batch"]) target["Batch"] = row["Batch"];
       } else {
         primaryMap[primary] = merged.length;
         merged.push({...row});
@@ -919,11 +967,12 @@ function applyReconciliationToData(df) {
       const idx = primaryMap[primary];
       if (idx !== undefined) {
         const target = merged[idx];
-        ["Unrestricted Stock","Stock in Quality Inspection","Blocked Stock","Stock in Transit",
-         "Value of Stock in Quality Inspection","Value of Stock in Transit",
-         "Value of Unrestricted Stock","Total Value","Total Qty"].forEach(c => {
-          target[c] = (target[c]||0) + (row[c]||0);
-        });
+        NUM_COLS.forEach(c => { target[c] = (target[c]||0) + (row[c]||0); });
+        // FIX 3: carry forward non-numeric fields from alias if primary is missing them
+        if (!target["_expiry"] && row["_expiry"]) target["_expiry"] = row["_expiry"];
+        if (!target["Description of Storage Location"] && row["Description of Storage Location"])
+          target["Description of Storage Location"] = row["Description of Storage Location"];
+        if (!target["Batch"] && row["Batch"]) target["Batch"] = row["Batch"];
         // Append alias code to description for visibility
         if (!target["Material Description"].includes(`[+${row["Material"]}]`)) {
           target["Material Description"] += ` [+${row["Material"]}]`;
@@ -993,10 +1042,6 @@ function searchReconcileMaterials(query) {
   });
 }
 
-// Simple HTML escape to prevent XSS in material descriptions
-function escHtml(str) {
-  return String(str).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
-}
 
 function refreshReconcilePending() {
   const el    = document.getElementById("rp-pending");
@@ -1089,12 +1134,13 @@ function refreshReconcileGroupsList() {
 }
 
 // ── Persistence ──────────────────────────────────────────────────────────
+const RECONCILE_STORE_KEY = "pharmatrack_reconcile_v2";
 function saveReconcileGroups() {
-  try { localStorage.setItem("pharmatrack_reconcile", JSON.stringify(reconcileGroups)); } catch(e) {}
+  try { localStorage.setItem(RECONCILE_STORE_KEY, JSON.stringify(reconcileGroups)); } catch(e) {}
 }
 function loadReconcileGroups() {
   try {
-    const saved = localStorage.getItem("pharmatrack_reconcile");
+    const saved = localStorage.getItem(RECONCILE_STORE_KEY);
     if (saved) reconcileGroups = JSON.parse(saved);
   } catch(e) { reconcileGroups = []; }
 }
