@@ -350,7 +350,7 @@ function renderTransit() {
   const pf = pageFilters.transit;
   document.getElementById("transit-filter-plant").value = pf.plant||"";
   document.getElementById("transit-filter-mg").value    = pf.mg||"";
-  const df = applyPageFilter("transit").filter(r=>r["Stock in Transit"]>0);
+  const df = applyPageFilter("transit").filter(r=>r["Stock in Transit"]>0 && r["Value of Stock in Transit"]>0);
 
   const totalTV  = df.reduce((s,r)=>s+r["Value of Stock in Transit"],0);
   const totalTQ  = df.reduce((s,r)=>s+r["Stock in Transit"],0);
@@ -390,7 +390,7 @@ function renderTransit() {
 
   // FIX 6: use filtered df (not rawDf) so HO01 respects active plant/MG filters
   const allTransitDf = applyPageFilter("transit");
-  const ho01=allTransitDf.filter(r=>r["Stock in Transit"]>0).filter(r=>String(r["Plant"]).toUpperCase()==="HO01"||String(r["Plant Name"]).toUpperCase().includes("HO01")||String(r["Plant Name"]).toUpperCase().includes("HEAD OFFICE")||String(r["Plant Name"]).toUpperCase().includes("CENTRAL"));
+  const ho01=allTransitDf.filter(r=>r["Stock in Transit"]>0&&r["Value of Stock in Transit"]>0).filter(r=>String(r["Plant"]).toUpperCase()==="HO01"||String(r["Plant Name"]).toUpperCase().includes("HO01")||String(r["Plant Name"]).toUpperCase().includes("HEAD OFFICE")||String(r["Plant Name"]).toUpperCase().includes("CENTRAL"));
   if (ho01.length) {
     setKpis("ho01-kpis",[
       ["HO01 Transit Value",   fmtETB(ho01.reduce((s,r)=>s+r["Value of Stock in Transit"],0)),"From central hub","amber"],
@@ -418,7 +418,7 @@ function renderExpiry() {
   const cutoff = new Date(today); cutoff.setMonth(cutoff.getMonth()+months);
   const valid   = baseDf.filter(r=>r._expiry instanceof Date && !isNaN(r._expiry));
   // Exclude zero-quantity rows throughout — phantom SAP records with no physical stock
-  const expiring= valid.filter(r=>r._expiry>=today&&r._expiry<=cutoff&&(r["Unrestricted Stock"]||0)>0);
+  const expiring= valid.filter(r=>r._expiry>=today&&r._expiry<=cutoff&&(r["Unrestricted Stock"]||0)>0&&(r["Value of Unrestricted Stock"]||0)>0);
   const expired = valid.filter(r=>r._expiry<today);  // zero-qty filtered later in expired section
 
   setKpis("expiry-kpis",[
@@ -544,10 +544,13 @@ function renderExpirySearch() {
   const baseDf = applyReconciliationToData(rawDf);
 
   // Match on material code or description (case-insensitive)
+  // Only include rows with actual unrestricted quantity AND value — excludes
+  // branch records that SAP records without batch/valuation (qty=0, value=0).
   const matches = baseDf.filter(r => {
     const code = String(r["Material"] || "").toLowerCase();
     const desc = String(r["Material Description"] || "").toLowerCase();
-    return code.includes(query) || desc.includes(query);
+    const hasStock = (r["Unrestricted Stock"] || 0) > 0 && (r["Value of Unrestricted Stock"] || 0) > 0;
+    return hasStock && (code.includes(query) || desc.includes(query));
   });
 
   if (!matches.length) {
@@ -609,7 +612,7 @@ function renderQC() {
   const pf = pageFilters.qc;
   document.getElementById("qc-filter-plant").value = pf.plant||"";
   document.getElementById("qc-filter-mg").value    = pf.mg||"";
-  const df = applyPageFilter("qc").filter(r=>r["Stock in Quality Inspection"]>0);
+  const df = applyPageFilter("qc").filter(r=>r["Stock in Quality Inspection"]>0 && r["Value of Stock in Quality Inspection"]>0);
 
   const totalQCVal=df.reduce((s,r)=>s+r["Value of Stock in Quality Inspection"],0);
   const totalQCQty=df.reduce((s,r)=>s+r["Stock in Quality Inspection"],0);
