@@ -64,13 +64,15 @@ const isNonMedicalGroup = name => {
 //
 // Rules (applied after normalising Excel scientific notation):
 //  1. Excel scientific notation (e.g. 7E+09) is normalised to integer string first.
-//  2. ALL codes whose first character is a digit 1–9 are excluded.
-//     This covers codes starting with 1, 2, 3, 4, 5, 6, 7, 8, or 9 —
-//     including project/non-trade (4xxxxx), SAP header codes (10000, 20000…),
-//     and all other numeric ranges (100001, 200050, etc.).
-//     Only codes with a non-numeric or zero-leading prefix are kept.
+//  2. Purely numeric codes (digits only, no hyphens or letters) are excluded.
+//     This covers SAP header codes (10000, 20000…), project/non-trade numeric
+//     codes (400001, 500050, etc.) and other all-numeric SAP internal codes.
+//  3. Alphanumeric codes that start with a digit but contain letters or hyphens
+//     (e.g. 104-CIPR-0102, 117-CIPR-1201) are KEPT — these are real pharma
+//     product codes that follow the NNN-XXXX-NNNN naming convention.
 const isNonMedicalCode = code => {
   let s = String(code).trim();
   if (/e/i.test(s)) s = Math.round(Number(s)).toString();
-  return /^[1-9]/.test(s);
+  // Exclude only if the code is purely numeric (no letters or hyphens)
+  return /^\d+$/.test(s);
 };
