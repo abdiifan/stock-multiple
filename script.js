@@ -308,12 +308,28 @@ function renderDashboard() {
     marker:{colors:COLORWAY}, hovertemplate:"<b>%{label}</b><br>ETB %{value:,.0f}<br>%{percent}<extra></extra>",
   }], pl({ showlegend:false, height:280, margin:{l:10,r:10,t:30,b:10} }), PLOTLY_CONFIG);
 
-  // MG bar top 15
-  const mgVal = sortBy(groupBy(df,"Material Group Name",[["val","Total Value"],["qty","Total Qty"]]),"val",true).slice(-15);
-  Plotly.newPlot("chart-mg-bar",[
-    { type:"bar", orientation:"h", name:"Value (ETB)", y:mgVal.map(r=>r["Material Group Name"]), x:mgVal.map(r=>r.val), marker:{color:"#58a6ff"}, hovertemplate:"<b>%{y}</b><br>ETB %{x:,.0f}<extra></extra>" },
-    { type:"bar", orientation:"h", name:"Quantity", y:mgVal.map(r=>r["Material Group Name"]), x:mgVal.map(r=>r.qty), marker:{color:"#3fb950"}, hovertemplate:"<b>%{y}</b><br>Qty: %{x:,.0f}<extra></extra>" },
-  ], pl({ barmode:"group", height:420, margin:{l:10,r:20,t:10,b:20} }), PLOTLY_CONFIG);
+  // Near-expiry inventory by plant (items expiring within 6 months, qty > 0)
+  const nearCutoff = new Date(); nearCutoff.setMonth(nearCutoff.getMonth() + 6);
+  const nearToday  = new Date();
+  const nearExpiry = df.filter(r =>
+    r._expiry instanceof Date && !isNaN(r._expiry) &&
+    r._expiry >= nearToday && r._expiry <= nearCutoff &&
+    (r["Unrestricted Stock"] || 0) > 0
+  );
+  const nearByPlant = sortBy(
+    groupBy(nearExpiry, "Plant Name", [["val","Value of Unrestricted Stock"],["qty","Unrestricted Stock"]]),
+    "val"
+  );
+  if (nearByPlant.length) {
+    Plotly.newPlot("chart-mg-bar",[
+      { type:"bar", name:"Value at Risk (ETB)", x:nearByPlant.map(r=>r["Plant Name"]), y:nearByPlant.map(r=>r.val), yaxis:"y",  marker:{color:"#d29922"}, hovertemplate:"<b>%{x}</b><br>ETB %{y:,.0f}<extra></extra>" },
+      { type:"scatter", mode:"lines+markers", name:"Qty at Risk", x:nearByPlant.map(r=>r["Plant Name"]), y:nearByPlant.map(r=>r.qty), yaxis:"y2", marker:{color:"#f85149",size:8}, line:{color:"#f85149"}, hovertemplate:"<b>%{x}</b><br>Qty: %{y:,.0f}<extra></extra>" },
+    ], pl({ height:420, margin:{l:20,r:60,t:20,b:100}, barmode:"group",
+      yaxis2:{overlaying:"y",side:"right",gridcolor:"transparent",tickfont:{color:"#f85149"},title:{text:"Qty",font:{color:"#f85149"}}}
+    }), PLOTLY_CONFIG);
+  } else {
+    document.getElementById("chart-mg-bar").innerHTML = `<div class="alert-info" style="margin:1rem 0">✓ No near-expiry stock (within 6 months) with quantity on hand.</div>`;
+  }
 
   // Download handlers
   const dlCols=[
