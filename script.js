@@ -45,8 +45,13 @@ const pageFilters = {
 };
 
 // ── RECONCILIATION STATE ───────────────────────────────────────────────────
-let reconcileGroups = []; // [{name, codes:[]}]
-let reconcilePending = []; // [{code, desc}]
+// Each entry: { sourceMaterial, sourceDesc, sourceUnit,
+//               conversionFactor,
+//               targetMaterial, targetDesc, targetUnit }
+// Qty rule: targetQty = sourceQty × conversionFactor
+// Value rule: values are in ETB → summed as-is (no factor applied)
+// Expiry rule: earliest (soonest) expiry date is kept (safest for pharma)
+let reconcileGroups = [];
 
 // ── FORMAT HELPERS ─────────────────────────────────────────────────────────
 const fmtETB = v => `ETB ${Number(v || 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
@@ -897,206 +902,286 @@ function renderPreviewTable() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// MATERIAL CODE RECONCILIATION
+// MATERIAL UOM CONVERSION & RECONCILIATION
 // ═══════════════════════════════════════════════════════════════════════════
+//
+// Data model: reconcileGroups = [{
+//   sourceMaterial, sourceDesc, sourceUnit,
+//   conversionFactor,
+//   targetMaterial,  targetDesc,  targetUnit
+// }]
+//
+// Qty rule  : targetQty = sourceQty × conversionFactor
+// Value rule: values are ETB monetary → summed as-is (no factor)
+// Expiry    : earliest (soonest) expiry kept — most conservative for pharma
+// QC / Transit quantities: also × conversionFactor (physical units)
 
-// Returns the canonical (primary) code for a given material code,
-// based on defined reconcile groups. Used by all renderers.
-function getCanonicalCode(code) {
-  for (const g of reconcileGroups) {
-    if (g.codes.includes(code)) return g.codes[0]; // first code = primary
-  }
-  return code;
+// Returns conversion rule for a source code, or null.
+function getConversion(code) {
+  return reconcileGroups.find(g => g.sourceMaterial === code) || null;
 }
 
-// Merges rawDf rows so that reconciled codes are aggregated together.
-// Returns a new array where aliased materials are summed into their primary code.
+// Legacy helper still used by a few callers.
+function getCanonicalCode(code) {
+  const conv = getConversion(code);
+  return conv ? conv.targetMaterial : code;
+}
+
+// Applies all UOM conversions to a data frame.
+// Source rows are converted (qty × factor) and merged into target rows.
+// Values (ETB) are summed as-is. Expiry = earliest date across merged rows.
 function applyReconciliationToData(df) {
   if (!reconcileGroups.length) return df;
-  const merged = [];
-  const primaryMap = {}; // primaryCode -> merged row index
 
-  // Numeric columns that get summed across reconciled rows
-  const NUM_COLS = ["Unrestricted Stock","Stock in Quality Inspection","Blocked Stock","Stock in Transit",
-    "Value of Stock in Quality Inspection","Value of Stock in Transit",
-    "Value of Unrestricted Stock","Total Value","Total Qty"];
+  const QTY_COLS = [
+    "Unrestricted Stock",
+    "Stock in Quality Inspection",
+    "Blocked Stock",
+    "Stock in Transit",
+    "Total Qty",
+  ];
+  const VAL_COLS = [
+    "Value of Unrestricted Stock",
+    "Value of Stock in Quality Inspection",
+    "Value of Stock in Transit",
+    "Total Value",
+  ];
+
+  const merged = [];
+  // Merge key: target material + plant + storage loc + batch
+  const mergeKey = r =>
+    `${r["Material"]}||${r["Plant"]}||${r["Storage Location"]}||${r["Batch"]||""}`;
+  const keyMap = {};
 
   df.forEach(row => {
-    const primary = getCanonicalCode(row["Material"]);
-    if (primary === row["Material"]) {
-      const idx = primaryMap[primary];
-      if (idx !== undefined) {
-        // Primary seen before — aggregate numeric cols only
-        const target = merged[idx];
-        NUM_COLS.forEach(c => { target[c] = (target[c]||0) + (row[c]||0); });
-        // FIX 3: carry forward non-numeric fields if the primary row is missing them
-        if (!target["_expiry"] && row["_expiry"]) target["_expiry"] = row["_expiry"];
-        if (!target["Description of Storage Location"] && row["Description of Storage Location"])
-          target["Description of Storage Location"] = row["Description of Storage Location"];
-        if (!target["Batch"] && row["Batch"]) target["Batch"] = row["Batch"];
+    const conv = getConversion(row["Material"]);
+
+    if (!conv) {
+      // No conversion rule — pass through unchanged
+      const k = mergeKey(row);
+      if (keyMap[k] !== undefined) {
+        // Aggregate duplicate native target rows (edge case)
+        const target = merged[keyMap[k]];
+        QTY_COLS.forEach(c => { target[c] = (target[c]||0) + (row[c]||0); });
+        VAL_COLS.forEach(c => { target[c] = (target[c]||0) + (row[c]||0); });
+        _mergeExpiry(target, row);
       } else {
-        primaryMap[primary] = merged.length;
+        keyMap[k] = merged.length;
         merged.push({...row});
       }
+      return;
+    }
+
+    // Build converted row: replace identity with target, scale qtys
+    const convertedRow = {...row};
+    convertedRow["Material"]             = conv.targetMaterial;
+    convertedRow["Material Description"] = conv.targetDesc || row["Material Description"];
+
+    QTY_COLS.forEach(c => {
+      convertedRow[c] = (row[c]||0) * conv.conversionFactor;
+    });
+    // Values: monetary ETB — no unit factor, just sum
+    VAL_COLS.forEach(c => {
+      convertedRow[c] = row[c]||0;
+    });
+
+    const k = mergeKey(convertedRow);
+    if (keyMap[k] !== undefined) {
+      const target = merged[keyMap[k]];
+      QTY_COLS.forEach(c => { target[c] = (target[c]||0) + (convertedRow[c]||0); });
+      VAL_COLS.forEach(c => { target[c] = (target[c]||0) + (convertedRow[c]||0); });
+      _mergeExpiry(target, convertedRow);
+      if (!target["Batch"] && convertedRow["Batch"]) target["Batch"] = convertedRow["Batch"];
+      if (!target["Description of Storage Location"] && convertedRow["Description of Storage Location"])
+        target["Description of Storage Location"] = convertedRow["Description of Storage Location"];
     } else {
-      // This is an alias — merge into primary
-      const idx = primaryMap[primary];
-      if (idx !== undefined) {
-        const target = merged[idx];
-        NUM_COLS.forEach(c => { target[c] = (target[c]||0) + (row[c]||0); });
-        // FIX 3: carry forward non-numeric fields from alias if primary is missing them
-        if (!target["_expiry"] && row["_expiry"]) target["_expiry"] = row["_expiry"];
-        if (!target["Description of Storage Location"] && row["Description of Storage Location"])
-          target["Description of Storage Location"] = row["Description of Storage Location"];
-        if (!target["Batch"] && row["Batch"]) target["Batch"] = row["Batch"];
-        // Append alias code to description for visibility
-        if (!target["Material Description"].includes(`[+${row["Material"]}]`)) {
-          target["Material Description"] += ` [+${row["Material"]}]`;
-        }
-      } else {
-        // Primary not yet seen — add this row as if it were the primary
-        primaryMap[primary] = merged.length;
-        merged.push({...row, Material: primary});
-      }
+      keyMap[k] = merged.length;
+      merged.push(convertedRow);
     }
   });
+
   return merged;
 }
 
+// Keep earliest (soonest) expiry — safest approach for pharma stock management.
+// A batch converted from a different pack size must inherit the worst-case expiry.
+function _mergeExpiry(target, src) {
+  const te = target["_expiry"], se = src["_expiry"];
+  if (se instanceof Date && !isNaN(se)) {
+    if (!(te instanceof Date) || isNaN(te) || se < te) {
+      target["_expiry"] = se;
+    }
+  }
+}
+
+// ── Panel open / close ────────────────────────────────────────────────────
 function openReconcilePanel() {
-  document.getElementById("reconcile-panel").style.display="flex";
-  document.getElementById("reconcile-overlay").style.display="block";
+  document.getElementById("reconcile-panel").style.display = "flex";
+  document.getElementById("reconcile-overlay").style.display = "block";
   refreshReconcileGroupsList();
-  // Restore search state
-  const q = document.getElementById("rp-search").value;
-  if (q.trim()) searchReconcileMaterials(q);
-  else refreshReconcilePending();
 }
 
 function closeReconcilePanel() {
-  document.getElementById("reconcile-panel").style.display="none";
-  document.getElementById("reconcile-overlay").style.display="none";
+  document.getElementById("reconcile-panel").style.display = "none";
+  document.getElementById("reconcile-overlay").style.display = "none";
 }
 
-function searchReconcileMaterials(query) {
-  const resultsEl = document.getElementById("rp-search-results");
-  if (!rawDf.length || !query.trim()) {
-    resultsEl.innerHTML=`<div style="color:var(--dim);font-size:0.78rem;padding:0.5rem">Upload data and type to search materials.</div>`;
-    return;
-  }
-  const q = query.toLowerCase().trim();
-  const allMaterials = [...new Map(rawDf.map(r=>[r["Material"],{code:r["Material"],desc:r["Material Description"]}])).values()];
-  const matches = allMaterials.filter(m=>m.code.toLowerCase().includes(q)||m.desc.toLowerCase().includes(q)).slice(0,20);
-
-  if (!matches.length) { resultsEl.innerHTML=`<div class="alert-info">No materials found.</div>`; return; }
-
-  // FIX Bug 1: Use index-based closure instead of data-attributes for click handler
-  // This avoids HTML attribute encoding issues with special chars in descriptions
-  resultsEl.innerHTML = matches.map((m, i) => {
-    const isPending = reconcilePending.some(p=>p.code===m.code);
-    const inGroup   = reconcileGroups.some(g=>g.codes.includes(m.code));
-    const tag = inGroup ? `<span style="font-size:0.65rem;color:var(--green);margin-left:4px">✓ In group</span>` : "";
-    return `<div class="rp-result-item${isPending?" selected":""}" data-match-idx="${i}">
-      <span class="rp-result-code">${escHtml(m.code)}</span>
-      <span class="rp-result-desc">${escHtml(m.desc)}${tag}</span>
-      <button class="rp-add-btn${isPending?" added":""}" data-match-idx="${i}">${isPending?"✓ Added":"+ Add"}</button>
-    </div>`;
-  }).join("");
-
-  // Attach listeners using closure over `matches` array — no data-attribute encoding needed
-  resultsEl.querySelectorAll(".rp-add-btn").forEach(btn => {
-    btn.addEventListener("click", e => {
-      e.stopPropagation();
-      const m = matches[parseInt(btn.dataset.matchIdx)];
-      if (!m) return;
-      if (!reconcilePending.some(p=>p.code===m.code)) {
-        reconcilePending.push({code: m.code, desc: m.desc});
-        refreshReconcilePending();
-        searchReconcileMaterials(query); // re-render results to update "Added" state
+// ── Upload mapping Excel ──────────────────────────────────────────────────
+// Expected columns (row 1 = header):
+//   col0: Source Material  col1: Source Description  col2: Source Unit
+//   col3: Conversion Factor
+//   col4: Target Material  col5: Target Description  col6: Target Unit
+function handleReconcileFileUpload(file) {
+  const statusEl = document.getElementById("rp-upload-status");
+  statusEl.style.color = "var(--muted)";
+  statusEl.textContent = "⏳ Reading mapping file…";
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const wb = XLSX.read(e.target.result, {type:"array"});
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:""});
+      let added = 0, skipped = 0;
+      for (let i = 1; i < rows.length; i++) {
+        const r = rows[i];
+        const srcMat  = String(r[0]||"").trim();
+        const srcDesc = String(r[1]||"").trim();
+        const srcUnit = String(r[2]||"").trim();
+        const factor  = parseFloat(r[3]);
+        const tgtMat  = String(r[4]||"").trim();
+        const tgtDesc = String(r[5]||"").trim();
+        const tgtUnit = String(r[6]||"").trim();
+        if (!srcMat || !tgtMat || isNaN(factor) || factor <= 0) { skipped++; continue; }
+        if (reconcileGroups.some(g => g.sourceMaterial === srcMat)) { skipped++; continue; }
+        reconcileGroups.push({
+          sourceMaterial: srcMat, sourceDesc: srcDesc, sourceUnit: srcUnit,
+          conversionFactor: factor,
+          targetMaterial: tgtMat, targetDesc: tgtDesc, targetUnit: tgtUnit,
+        });
+        added++;
       }
+      saveReconcileGroups();
+      refreshReconcileGroupsList();
+      statusEl.style.color = "var(--green)";
+      statusEl.textContent = `✓ Added ${added} conversion(s)${skipped?" · "+skipped+" skipped":""}`;
+      if (rawDf.length) renderPage(currentPage);
+    } catch(err) {
+      statusEl.style.color = "var(--red)";
+      statusEl.textContent = "✗ Failed to read file: " + err.message;
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+// ── Manual search & select ────────────────────────────────────────────────
+let rpSrcSelected = null;
+let rpTgtSelected = null;
+
+function rpSearch(query, resultsElId, onSelect) {
+  const el = document.getElementById(resultsElId);
+  if (!query.trim() || !rawDf.length) { el.innerHTML = ""; return; }
+  const q = query.toLowerCase();
+  const seen = new Set();
+  const matches = rawDf.filter(r => {
+    const c = String(r["Material"]||""), d = String(r["Material Description"]||"");
+    if (seen.has(c)) return false;
+    if (c.toLowerCase().includes(q) || d.toLowerCase().includes(q)) { seen.add(c); return true; }
+    return false;
+  }).slice(0, 12);
+
+  if (!matches.length) {
+    el.innerHTML = `<div style="padding:6px;font-size:0.72rem;color:var(--muted)">No materials found</div>`;
+    return;
+  }
+  el.innerHTML = matches.map((m, i) =>
+    `<div class="rp-result-item" data-idx="${i}" style="cursor:pointer">
+      <span class="rp-result-code">${escHtml(m["Material"])}</span>
+      <span class="rp-result-desc">${escHtml(m["Material Description"])}</span>
+    </div>`
+  ).join("");
+  el.querySelectorAll(".rp-result-item").forEach(item => {
+    item.addEventListener("click", () => {
+      const m = matches[parseInt(item.dataset.idx)];
+      onSelect({code: m["Material"], desc: m["Material Description"]});
+      el.innerHTML = "";
     });
   });
 }
 
-
-function refreshReconcilePending() {
-  const el    = document.getElementById("rp-pending");
-  const count = document.getElementById("rp-pending-count");
-  count.textContent = reconcilePending.length ? `(${reconcilePending.length})` : "";
-  if (!reconcilePending.length) {
-    el.innerHTML=`<div style="color:var(--dim);font-size:0.78rem;padding:0.5rem">No codes selected yet. Search and add codes above.</div>`;
-    return;
+function rpSetSelected(side, data) {
+  const chipId   = side === "src" ? "rp-src-selected" : "rp-tgt-selected";
+  const searchId = side === "src" ? "rp-src-search"   : "rp-tgt-search";
+  if (side === "src") rpSrcSelected = data; else rpTgtSelected = data;
+  const chip = document.getElementById(chipId);
+  if (data) {
+    chip.style.display = "block";
+    chip.innerHTML = `<span class="rp-result-code">${escHtml(data.code)}</span>
+      <span class="rp-result-desc">${escHtml(data.desc)}</span>
+      <button onclick="rpClearSelected('${side}')" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:11px;margin-left:4px">✕</button>`;
+    document.getElementById(searchId).value = "";
+  } else {
+    chip.style.display = "none";
   }
-  el.innerHTML = reconcilePending.map((p, i) => `
-    <div class="rp-pending-item">
-      <span class="rp-result-code">${escHtml(p.code)}</span>
-      <span class="rp-result-desc" style="flex:1;margin:0 0.5rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:0.74rem;color:var(--muted)">${escHtml(p.desc)}</span>
-      <button class="rp-pending-remove" data-idx="${i}">✕</button>
-    </div>`).join("");
-
-  // FIX Bug 2 (partial): Use stable index from current reconcilePending snapshot
-  el.querySelectorAll(".rp-pending-remove").forEach(btn => {
-    const idx = parseInt(btn.dataset.idx);
-    btn.addEventListener("click", () => {
-      reconcilePending.splice(idx, 1);
-      refreshReconcilePending();
-      const q = document.getElementById("rp-search").value;
-      if (q.trim()) searchReconcileMaterials(q);
-    });
-  });
 }
 
-function confirmReconcileGroup() {
-  if (reconcilePending.length < 2) { alert("Select at least 2 material codes to link."); return; }
+function rpClearSelected(side) { rpSetSelected(side, null); }
 
-  // Check if any pending code already belongs to an existing group
-  const conflicts = reconcilePending.filter(p => reconcileGroups.some(g=>g.codes.includes(p.code)));
-  if (conflicts.length) {
-    alert(`These codes are already in a group: ${conflicts.map(c=>c.code).join(", ")}\nRemove them from their existing group first.`);
-    return;
+function addManualConversion() {
+  if (!rpSrcSelected) { alert("Select a source material first."); return; }
+  if (!rpTgtSelected) { alert("Select a target material first."); return; }
+  if (rpSrcSelected.code === rpTgtSelected.code) {
+    alert("Source and target must be different materials."); return;
   }
-
-  // Prompt for a meaningful group name
-  const defaultName = `Group ${reconcileGroups.length+1} (${reconcilePending[0].code} +${reconcilePending.length-1} more)`;
-  const name = (prompt("Enter a name for this reconciliation group:", defaultName) || "").trim() || defaultName;
-
-  reconcileGroups.push({ name, codes: reconcilePending.map(p=>p.code) });
-  reconcilePending.length = 0;
-  refreshReconcilePending();
-  refreshReconcileGroupsList();
-  document.getElementById("rp-search").value = "";
-  document.getElementById("rp-search-results").innerHTML = "";
-
-  // Save to localStorage so groups persist across sessions
+  const factor = parseFloat(document.getElementById("rp-conv-factor").value);
+  if (isNaN(factor) || factor <= 0) { alert("Enter a valid conversion factor > 0."); return; }
+  if (reconcileGroups.some(g => g.sourceMaterial === rpSrcSelected.code)) {
+    alert(`"${rpSrcSelected.code}" already has a conversion. Delete it first.`); return;
+  }
+  reconcileGroups.push({
+    sourceMaterial: rpSrcSelected.code, sourceDesc: rpSrcSelected.desc, sourceUnit: "",
+    conversionFactor: factor,
+    targetMaterial: rpTgtSelected.code, targetDesc: rpTgtSelected.desc, targetUnit: "",
+  });
   saveReconcileGroups();
-
-  // Re-render current page so reconciliation takes effect immediately
+  refreshReconcileGroupsList();
+  rpClearSelected("src");
+  rpClearSelected("tgt");
+  document.getElementById("rp-conv-factor").value = "1";
   if (rawDf.length) renderPage(currentPage);
 }
 
+// ── Render existing conversion list ──────────────────────────────────────
 function refreshReconcileGroupsList() {
   const el = document.getElementById("rp-groups-list");
+  const countEl = document.getElementById("rp-group-count");
+  countEl.textContent = reconcileGroups.length ? `(${reconcileGroups.length})` : "";
   if (!reconcileGroups.length) {
-    el.innerHTML=`<div style="color:var(--dim);font-size:0.78rem;padding:0.5rem">No link groups created yet.</div>`;
+    el.innerHTML = `<div style="color:var(--muted);font-size:0.75rem;padding:0.5rem 0">No conversions defined yet.</div>`;
     return;
   }
-
-  // FIX Bug 2: Use event delegation on the container instead of per-button listeners
-  // This avoids stale index issues after deletes
   el.innerHTML = reconcileGroups.map((g, i) => `
-    <div class="rp-group-card">
-      <div class="rp-group-header">
-        <span class="rp-group-name">🔗 ${escHtml(g.name)}</span>
-        <div style="display:flex;gap:0.4rem;align-items:center">
-          <span style="font-size:0.65rem;color:var(--dim)">${g.codes.length} codes · primary: <span style="color:var(--purple)">${escHtml(g.codes[0])}</span></span>
-          <button class="rp-group-del" data-group-idx="${i}">Delete</button>
+    <div class="rp-group-card" style="margin-bottom:0.6rem">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:0.5rem">
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap;margin-bottom:4px">
+            <span class="rp-code-tag">${escHtml(g.sourceMaterial)}</span>
+            <span style="color:var(--muted);font-size:0.7rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px">${escHtml(g.sourceDesc||"")}</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:0.4rem;margin-bottom:4px">
+            <span style="color:var(--amber);font-size:0.85rem">⟶</span>
+            <span class="rp-code-tag" style="border-color:var(--green);color:var(--green)">${escHtml(g.targetMaterial)}</span>
+            <span style="color:var(--muted);font-size:0.7rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px">${escHtml(g.targetDesc||"")}</span>
+          </div>
+          <div style="font-size:0.7rem;color:var(--amber)">
+            × ${g.conversionFactor}
+            <span style="color:var(--muted)">&nbsp;qty × factor → target qty &nbsp;|&nbsp; value summed as-is</span>
+          </div>
         </div>
+        <button class="rp-group-del" data-group-idx="${i}" style="flex-shrink:0;font-size:0.68rem;padding:2px 8px;margin-top:2px">Delete</button>
       </div>
-      <div class="rp-group-codes">${g.codes.map((c,ci)=>`<span class="rp-code-tag" title="${ci===0?'Primary code':'Alias'}">${escHtml(c)}${ci===0?' ★':''}</span>`).join("")}</div>
     </div>`).join("");
 
-  // Single delegated listener on the container — no stale index issues
-  el.onclick = e => {
+  el.addEventListener("click", e => {
     const btn = e.target.closest(".rp-group-del");
     if (!btn) return;
     const idx = parseInt(btn.dataset.groupIdx);
@@ -1106,11 +1191,11 @@ function refreshReconcileGroupsList() {
       refreshReconcileGroupsList();
       if (rawDf.length) renderPage(currentPage);
     }
-  };
+  });
 }
 
 // ── Persistence ──────────────────────────────────────────────────────────
-const RECONCILE_STORE_KEY = "pharmatrack_reconcile_v2";
+const RECONCILE_STORE_KEY = "pharmatrack_reconcile_v3";
 function saveReconcileGroups() {
   try { localStorage.setItem(RECONCILE_STORE_KEY, JSON.stringify(reconcileGroups)); } catch(e) {}
 }
@@ -1120,6 +1205,7 @@ function loadReconcileGroups() {
     if (saved) reconcileGroups = JSON.parse(saved);
   } catch(e) { reconcileGroups = []; }
 }
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PAGE SWITCHING
@@ -1189,10 +1275,37 @@ document.addEventListener("DOMContentLoaded",()=>{
   wirePageFilters("flow","flow-filter-plant","flow-filter-mg","flow-filter-apply","flow-filter-clear");
 
   // ── Reconciliation panel ──
-  document.getElementById("open-reconcile-btn").addEventListener("click",openReconcilePanel);
-  document.getElementById("reconcile-close").addEventListener("click",closeReconcilePanel);
-  document.getElementById("reconcile-overlay").addEventListener("click",closeReconcilePanel);
-  document.getElementById("rp-search").addEventListener("input",e=>searchReconcileMaterials(e.target.value));
-  document.getElementById("rp-confirm").addEventListener("click",confirmReconcileGroup);
-  document.getElementById("rp-clear-pending").addEventListener("click",()=>{ reconcilePending.length=0; refreshReconcilePending(); });
+  document.getElementById("open-reconcile-btn").addEventListener("click", openReconcilePanel);
+  document.getElementById("reconcile-close").addEventListener("click", closeReconcilePanel);
+  document.getElementById("reconcile-overlay").addEventListener("click", closeReconcilePanel);
+
+  // Mapping file upload
+  document.getElementById("rp-file-input").addEventListener("change", e => {
+    const f = e.target.files[0]; if (f) handleReconcileFileUpload(f);
+    e.target.value = ""; // allow re-upload of same file
+  });
+
+  // Manual source search
+  document.getElementById("rp-src-search").addEventListener("input", e => {
+    rpSearch(e.target.value, "rp-src-results", data => rpSetSelected("src", data));
+  });
+
+  // Manual target search
+  document.getElementById("rp-tgt-search").addEventListener("input", e => {
+    rpSearch(e.target.value, "rp-tgt-results", data => rpSetSelected("tgt", data));
+  });
+
+  // Add manual conversion
+  document.getElementById("rp-add-manual").addEventListener("click", addManualConversion);
+
+  // Clear all
+  document.getElementById("rp-clear-all").addEventListener("click", () => {
+    if (!reconcileGroups.length) return;
+    if (confirm(`Delete all ${reconcileGroups.length} conversion(s)?`)) {
+      reconcileGroups.length = 0;
+      saveReconcileGroups();
+      refreshReconcileGroupsList();
+      if (rawDf.length) renderPage(currentPage);
+    }
+  });
 });
