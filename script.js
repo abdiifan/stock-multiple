@@ -406,10 +406,11 @@ function renderExpiry() {
     document.getElementById("expired-table-wrap").innerHTML=buildTable(expiredRows,[
       {key:"Material",label:"Material"},{key:"Material Description",label:"Description"},
       {key:"Material Group Name",label:"Material Group"},{key:"Plant Name",label:"Plant"},
+      {key:"Description of Storage Location",label:"Storage Location"},
       {key:"_expiryStr",label:"Expiry Date"},
       {key:"Unrestricted Stock",label:"Qty",fmt:fmtQty,rawKey:"Unrestricted Stock",cellClass:"col-qty"},
     ]);
-    document.getElementById("btn-dl-expired").onclick=()=>downloadCSV(expiredRows,[{key:"Material",label:"Material"},{key:"Material Description",label:"Description"},{key:"Plant Name",label:"Plant"},{key:"_expiryStr",label:"Expiry Date"},{key:"Unrestricted Stock",label:"Qty",rawKey:"Unrestricted Stock"}],"expired_items.csv");
+    document.getElementById("btn-dl-expired").onclick=()=>downloadCSV(expiredRows,[{key:"Material",label:"Material"},{key:"Material Description",label:"Description"},{key:"Plant Name",label:"Plant"},{key:"Description of Storage Location",label:"Storage Location"},{key:"_expiryStr",label:"Expiry Date"},{key:"Unrestricted Stock",label:"Qty",rawKey:"Unrestricted Stock"}],"expired_items.csv");
   } else { document.getElementById("expired-section").style.display="none"; }
 }
 
