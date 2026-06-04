@@ -440,7 +440,54 @@ function renderExpiry() {
       {type:"bar",name:"Items Count",x:ms,y:ms.map(m=>monthMap[m]),marker:{color:"#d29922"},hovertemplate:"<b>%{x}</b><br>%{y} items<extra></extra>"},
       {type:"scatter",mode:"lines+markers",name:"Value at Risk",x:ms,y:ms.map(m=>valMap[m]),yaxis:"y2",marker:{color:"#f85149",size:8},line:{color:"#f85149"},hovertemplate:"<b>%{x}</b><br>ETB %{y:,.0f}<extra></extra>"},
     ],pl({height:260,margin:{l:20,r:60,t:20,b:60},yaxis2:{overlaying:"y",side:"right",gridcolor:"transparent",tickfont:{color:"#f85149"}}}),PLOTLY_CONFIG);
-  } else { document.getElementById("chart-expiry-timeline").innerHTML=""; }
+
+    // Click a bar to drill into that month's items
+    document.getElementById("chart-expiry-timeline").on("plotly_click", function(data) {
+      const pt = data.points[0];
+      const monthKey = pt.x;
+      const [yr, mo] = monthKey.split("-").map(Number);
+      const monthItems = expiring.filter(r =>
+        r._expiry.getFullYear() === yr && r._expiry.getMonth() + 1 === mo
+      );
+      const drillCols = [
+        {key:"Material",label:"Material"},
+        {key:"Material Description",label:"Description"},
+        {key:"Material Group Name",label:"Material Group"},
+        {key:"Plant Name",label:"Plant"},
+        {key:"Description of Storage Location",label:"Storage Location"},
+        {key:"_expiryStr",label:"Expiry Date"},
+        {key:"Unrestricted Stock",label:"Qty",fmt:fmtQty,rawKey:"Unrestricted Stock",cellClass:"col-qty"},
+        {key:"Value of Unrestricted Stock",label:"Value (ETB)",fmt:fmtETB,rawKey:"Value of Unrestricted Stock",cellClass:"col-val"},
+        {key:"_daysLeft",label:"Days Left"},
+      ];
+      const drillRows = sortBy(
+        monthItems.map(r=>({
+          ...r,
+          _expiryStr: r._expiry ? r._expiry.toISOString().slice(0,10) : "",
+          _daysLeft:  r._expiry ? Math.floor((r._expiry - new Date()) / 86400000) : 9999
+        })),
+        "_daysLeft", true
+      );
+      const totalVal = monthItems.reduce((s,r)=>s+r["Value of Unrestricted Stock"],0);
+      const totalQty = monthItems.reduce((s,r)=>s+r["Unrestricted Stock"],0);
+      const monthLabel = new Date(yr, mo-1, 1).toLocaleString("default",{month:"long",year:"numeric"});
+      document.getElementById("expiry-drill-title").textContent = "\uD83D\uDCC5 " + monthLabel;
+      document.getElementById("expiry-drill-meta").textContent =
+        drillRows.length + " items \u00B7 " + fmtQty(totalQty) + " units \u00B7 " + fmtETB(totalVal);
+      document.getElementById("expiry-drill-table").innerHTML =
+        drillRows.length
+          ? buildTable(drillRows, drillCols, r => r._daysLeft<=30 ? "row-red" : r._daysLeft<=90 ? "row-amber" : "")
+          : '<div class="alert-info">No items for this month.</div>';
+      const drillEl = document.getElementById("expiry-drilldown");
+      drillEl.style.display = "block";
+      drillEl.scrollIntoView({behavior:"smooth", block:"nearest"});
+      document.getElementById("expiry-drill-dl-csv").onclick  = () => downloadCSV(drillRows,  drillCols, "expiry_" + monthKey + ".csv");
+      document.getElementById("expiry-drill-dl-xlsx").onclick = () => downloadExcel(drillRows, drillCols, "expiry_" + monthKey + ".xlsx");
+    });
+    document.getElementById("expiry-drill-close").onclick = () => {
+      document.getElementById("expiry-drilldown").style.display = "none";
+    };
+  } else { document.getElementById("chart-expiry-timeline").innerHTML=""; document.getElementById("expiry-drilldown").style.display="none"; }
 
   const expCols=[
     {key:"Material",label:"Material"},
