@@ -489,21 +489,7 @@ function renderExpiry() {
     };
   } else { document.getElementById("chart-expiry-timeline").innerHTML=""; document.getElementById("expiry-drilldown").style.display="none"; }
 
-  const expCols=[
-    {key:"Material",label:"Material"},
-    {key:"Material Description",label:"Description"},
-    {key:"Material Group Name",label:"Material Group"},
-    {key:"Plant Name",label:"Plant"},
-    {key:"Description of Storage Location",label:"Storage Location"},
-    {key:"_expiryStr",label:"Expiry Date"},
-    {key:"Unrestricted Stock",label:"Qty",fmt:fmtQty,rawKey:"Unrestricted Stock",cellClass:"col-qty"},
-    {key:"Value of Unrestricted Stock",label:"Value (ETB)",fmt:fmtETB,rawKey:"Value of Unrestricted Stock",cellClass:"col-val"},
-    {key:"_daysLeft",label:"Days Until Expiry"},
-  ];
-  const expRows=sortBy(expiring.map(r=>({...r,_expiryStr:r._expiry?r._expiry.toISOString().slice(0,10):"",_daysLeft:r._expiry?Math.floor((r._expiry-today)/86400000):9999})),"_daysLeft",true);
-  document.getElementById("expiry-table-wrap").innerHTML=expRows.length?buildTable(expRows,expCols,r=>r._daysLeft<=30?"row-red":r._daysLeft<=90?"row-amber":""):`<div class="alert-info">✓ No items expiring within the selected window.</div>`;
-  document.getElementById("btn-dl-expiry").onclick=()=>downloadCSV(expRows,expCols,`expiry_${months}months.csv`);
-  document.getElementById("btn-dl-expiry-xlsx").onclick=()=>downloadExcel(expRows,expCols,`expiry_${months}months.xlsx`);
+  document.getElementById("expiry-table-wrap").innerHTML="";
 
   // Exclude zero-quantity rows — no physical stock to action
   const expiredWithStock = expired.filter(r => (r["Unrestricted Stock"] || 0) > 0);
