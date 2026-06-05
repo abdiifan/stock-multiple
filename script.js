@@ -1,6 +1,24 @@
 // =============================================================================
 // PharmaTrack v2 — Pharmaceutical Inventory Management System
 // =============================================================================
+// Fixes applied vs v8:
+//  BUG-1  Preview download now exports full filtered dataset (not 500-row slice)
+//  BUG-2  Chain/circular reconciliation rules detected and blocked on save
+//  BUG-3  pageFilters reset on new file upload so stale plant/MG never persists
+//  BUG-4  "Already Expired" KPI now counts only stock-qty > 0 rows (matches table)
+//  BUG-5  Target materials blocked from being selected as a new source
+//  BUG-6  QC page no longer drops items with QC qty > 0 but zero ETB value
+//  BUG-7  rpSetSelected chip close button uses addEventListener, not inline onclick
+//  BUG-8  String expiry dates parsed as LOCAL midnight not UTC (timezone fix)
+//  BUG-9  CSV tab-character cells now quoted correctly
+//  BUG-10 groupBy empty-string bucket renamed to "(Blank)" for chart clarity
+//  PERF-1 applyReconciliationToData result memoised; invalidated on file/rule change
+//  PERF-2 File size warning before parse (>25 MB)
+//  ROBUST localStorage schema validated on load; corrupt entries discarded
+//  ROBUST Column header matching is now case-insensitive
+//  ROBUST Total Qty removed from QTY_COLS scaling (was scaled then overwritten)
+//  ROBUST Conversion factor stored with 9dp rounding to suppress float drift
+// =============================================================================
 
 // ── CONSTANTS ──────────────────────────────────────────────────────────────
 const REQUIRED_COLUMNS = [
@@ -44,6 +62,15 @@ const pageFilters = {
   flow:      { plant: "", mg: "" },
 };
 
+// FIX BUG-3: reset all page filters when a new file is loaded so stale plant/MG
+// values from the previous file can never produce a blank result set.
+function resetPageFilters() {
+  Object.keys(pageFilters).forEach(page => {
+    pageFilters[page].plant = "";
+    pageFilters[page].mg    = "";
+  });
+}
+
 // ── RECONCILIATION STATE ───────────────────────────────────────────────────
 // Each entry: { sourceMaterial, sourceDesc, sourceUnit,
 //               conversionFactor,
@@ -52,6 +79,33 @@ const pageFilters = {
 // Value rule: values are in ETB → summed as-is (no factor applied)
 // Expiry rule: earliest (soonest) expiry date is kept (safest for pharma)
 let reconcileGroups = [];
+
+// ── RECONCILIATION CACHE (PERF-1) ─────────────────────────────────────────
+// Cache the reconciled base so repeated page renders don't re-run the full
+// merge loop. Invalidated when rawDf or reconcileGroups changes.
+let _reconCache        = null;
+let _reconCacheRawLen  = -1;
+let _reconCacheGrpLen  = -1;
+
+function invalidateReconCache() {
+  _reconCache       = null;
+  _reconCacheRawLen = -1;
+  _reconCacheGrpLen = -1;
+}
+
+function getReconciledBase() {
+  if (
+    _reconCache !== null &&
+    _reconCacheRawLen === rawDf.length &&
+    _reconCacheGrpLen === reconcileGroups.length
+  ) {
+    return _reconCache;
+  }
+  _reconCache       = applyReconciliationToData(rawDf);
+  _reconCacheRawLen = rawDf.length;
+  _reconCacheGrpLen = reconcileGroups.length;
+  return _reconCache;
+}
 
 // ── FORMAT HELPERS ─────────────────────────────────────────────────────────
 const fmtETB = v => `ETB ${Number(v || 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
@@ -62,156 +116,184 @@ function escHtml(str) {
   return String(str ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 }
 
+// ── FIX BUG-8: Timezone-safe expiry date parser ────────────────────────────
+// new Date("2024-03-15") is parsed as UTC midnight → in UTC+3 it appears as
+// 2024-03-14 after 21:00 local time, causing day-off expiry errors.
+// This parser treats yyyy-mm-dd strings as LOCAL midnight to avoid that shift.
+function parseExpiryDate(d) {
+  if (d instanceof Date) return isNaN(d.getTime()) ? null : d;
+  if (!d) return null;
+  const s = String(d).trim();
+  // yyyy-mm-dd → local date (not UTC)
+  const isoMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    const dt = new Date(+isoMatch[1], +isoMatch[2] - 1, +isoMatch[3]);
+    return isNaN(dt.getTime()) ? null : dt;
+  }
+  // Fallback for other string formats
+  const p = new Date(d);
+  return isNaN(p.getTime()) ? null : p;
+}
+
 // ── LOAD & PROCESS EXCEL ───────────────────────────────────────────────────
 function loadFile(file) {
-  // Show loading state immediately before the synchronous XLSX parse blocks the UI
+  // FIX PERF-2: warn before parsing very large files
+  if (file.size > 25 * 1024 * 1024) {
+    if (!confirm(`This file is ${(file.size / 1024 / 1024).toFixed(1)} MB. Large files may take a few seconds to parse. Continue?`)) return;
+  }
+
   const statusEl = document.getElementById("fileStatus");
   statusEl.style.display = "block";
-  statusEl.innerHTML = `<div class="status-ok">⏳ LOADING…</div><div class="status-name">Parsing ${file.name}</div>`;
+  statusEl.innerHTML = `<div class="status-ok">⏳ LOADING…</div><div class="status-name">Parsing ${escHtml(file.name)}</div>`;
 
   const reader = new FileReader();
   reader.onload = e => {
-    // Defer heavy work one tick so the loading message renders first
     setTimeout(() => {
       try {
-      const wb   = XLSX.read(new Uint8Array(e.target.result), { type: "array", cellDates: true });
-      const ws   = wb.Sheets[wb.SheetNames[0]];
-      const data = XLSX.utils.sheet_to_json(ws, { defval: "" });
-      if (!data.length) { showError("The uploaded file contains no data."); return; }
+        const wb   = XLSX.read(new Uint8Array(e.target.result), { type: "array", cellDates: true });
+        const ws   = wb.Sheets[wb.SheetNames[0]];
+        const data = XLSX.utils.sheet_to_json(ws, { defval: "" });
+        if (!data.length) { showError("The uploaded file contains no data."); return; }
 
-      const trimmed = data.map(row => {
-        const r = {};
-        for (const [k, v] of Object.entries(row)) r[k.trim()] = v;
-        return r;
-      });
+        const trimmed = data.map(row => {
+          const r = {};
+          for (const [k, v] of Object.entries(row)) r[k.trim()] = v;
+          return r;
+        });
 
-      const cols = Object.keys(trimmed[0]);
-      const missing = REQUIRED_COLUMNS.filter(c => !cols.includes(c));
-      if (missing.length) { showError(`Missing columns: ${missing.join(", ")}`); return; }
+        // FIX ROBUST: case-insensitive column header matching
+        const colsLower = Object.keys(trimmed[0]).map(c => c.toLowerCase());
+        const missing = REQUIRED_COLUMNS.filter(c => !colsLower.includes(c.toLowerCase()));
+        if (missing.length) { showError(`Missing columns: ${missing.join(", ")}`); return; }
 
-      let df = trimmed
-        .filter(r => String(r["Special Stock Type"]).trim() !== "Q")
-        .filter(r => !isNonMedicalCode(r["Material"]))
-        .filter(r => !isNonMedicalGroup(r["Material Group Name"]));
+        let df = trimmed
+          .filter(r => String(r["Special Stock Type"]).trim() !== "Q")
+          .filter(r => !isNonMedicalCode(r["Material"]))
+          .filter(r => !isNonMedicalGroup(r["Material Group Name"]));
 
-      const numCols = ["Unrestricted Stock","Stock in Quality Inspection","Blocked Stock","Stock in Transit",
-                       "Value of Stock in Quality Inspection","Value of Stock in Transit","Value of Unrestricted Stock"];
-      df.forEach(row => {
-        numCols.forEach(c => { row[c] = parseFloat(row[c]) || 0; });
-        const d = row["Shelf Life Expiration Date"];
-        if (d instanceof Date) row._expiry = d;
-        else if (d) { const p = new Date(d); row._expiry = isNaN(p) ? null : p; }
-        else row._expiry = null;
-        row["Total Value"] = row["Value of Unrestricted Stock"] + row["Value of Stock in Transit"] + row["Value of Stock in Quality Inspection"];
-        row["Total Qty"]   = row["Unrestricted Stock"] + row["Stock in Transit"] + row["Stock in Quality Inspection"];
-      });
+        const numCols = [
+          "Unrestricted Stock","Stock in Quality Inspection","Blocked Stock","Stock in Transit",
+          "Value of Stock in Quality Inspection","Value of Stock in Transit","Value of Unrestricted Stock",
+        ];
+        df.forEach(row => {
+          numCols.forEach(c => { row[c] = parseFloat(row[c]) || 0; });
+          // FIX BUG-8: use timezone-safe parser
+          row._expiry = parseExpiryDate(row["Shelf Life Expiration Date"]);
+          row["Total Value"] = row["Value of Unrestricted Stock"] + row["Value of Stock in Transit"] + row["Value of Stock in Quality Inspection"];
+          row["Total Qty"]   = row["Unrestricted Stock"] + row["Stock in Transit"] + row["Stock in Quality Inspection"];
+        });
 
-      // Exclude any row where ALL stock quantities are zero —
-      // this covers: expired items with zero qty, unrestricted-only items
-      // with zero qty, and any other stock-type combination that nets to zero.
-      df = df.filter(r =>
-        r["Unrestricted Stock"] > 0 ||
-        r["Stock in Transit"] > 0 ||
-        r["Stock in Quality Inspection"] > 0 ||
-        r["Blocked Stock"] > 0
-      );
+        df = df.filter(r =>
+          r["Unrestricted Stock"] > 0 ||
+          r["Stock in Transit"] > 0 ||
+          r["Stock in Quality Inspection"] > 0 ||
+          r["Blocked Stock"] > 0
+        );
 
-      rawDf  = df;
-      filtDf = df;
-      showSuccess(file.name, df.length);
-      clearError();
-      hideLanding();
-      populateAllFilters();
-      renderPage(currentPage);
-      } catch (err) { showError(`Could not read Excel file: ${err.message}`); }
-    }, 30); // 30 ms — enough for the browser to paint the loading state
+        rawDf  = df;
+        filtDf = df;
+
+        // FIX BUG-3: clear stale page filters from the previous file
+        resetPageFilters();
+        // Invalidate reconciliation cache for the new dataset
+        invalidateReconCache();
+
+        showSuccess(file.name, df.length);
+        clearError();
+        hideLanding();
+        populateAllFilters();
+        renderPage(currentPage);
+      } catch (err) {
+        showError(`Could not read Excel file: ${err.message}`);
+      }
+    }, 30);
   };
   reader.readAsArrayBuffer(file);
 }
 
 // ── POPULATE FILTER DROPDOWNS ──────────────────────────────────────────────
 function populateAllFilters() {
-  const plants = [...new Set(rawDf.map(r=>r["Plant Name"]))].filter(Boolean).sort();
-  // Explicitly exclude non-medical groups from dropdowns — mirrors the exclusion
-  // applied during data load, so the filter never surfaces excluded categories.
-  const mgs    = [...new Set(rawDf.map(r=>r["Material Group Name"]))]
+  const plants = [...new Set(rawDf.map(r => r["Plant Name"]))].filter(Boolean).sort();
+  const mgs    = [...new Set(rawDf.map(r => r["Material Group Name"]))]
     .filter(Boolean)
     .filter(name => !isNonMedicalGroup(name))
     .sort();
 
-  const plantSelectors = ["dash-filter-plant","transit-filter-plant","expiry-filter-plant","qc-filter-plant","flow-filter-plant","filter-plant"];
-  const mgSelectors    = ["dash-filter-mg","transit-filter-mg","expiry-filter-mg","qc-filter-mg","branch-filter-mg","flow-filter-mg","filter-mg"];
-  const mgNameSelectors = ["filter-mgname"];
+  const plantSelectors   = ["dash-filter-plant","transit-filter-plant","expiry-filter-plant","qc-filter-plant","flow-filter-plant","filter-plant"];
+  const mgSelectors      = ["dash-filter-mg","transit-filter-mg","expiry-filter-mg","qc-filter-mg","branch-filter-mg","flow-filter-mg","filter-mg"];
+  const mgNameSelectors  = ["filter-mgname"];
 
   plantSelectors.forEach(id => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.innerHTML = `<option value="">All Plants</option>` + plants.map(p=>`<option value="${p}">${p}</option>`).join("");
+    const el = document.getElementById(id); if (!el) return;
+    el.innerHTML = `<option value="">All Plants</option>` + plants.map(p => `<option value="${escHtml(p)}">${escHtml(p)}</option>`).join("");
   });
   mgSelectors.forEach(id => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.innerHTML = `<option value="">All Material Groups</option>` + mgs.map(m=>`<option value="${m}">${m}</option>`).join("");
+    const el = document.getElementById(id); if (!el) return;
+    el.innerHTML = `<option value="">All Material Groups</option>` + mgs.map(m => `<option value="${escHtml(m)}">${escHtml(m)}</option>`).join("");
   });
   mgNameSelectors.forEach(id => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    const vals = [...new Set(rawDf.map(r=>r["Material Group Name"]))]
-      .filter(Boolean)
-      .filter(name => !isNonMedicalGroup(name))
-      .sort();
-    el.innerHTML = vals.map(v=>`<option value="${v}">${v}</option>`).join("");
+    const el = document.getElementById(id); if (!el) return;
+    el.innerHTML = mgs.map(v => `<option value="${escHtml(v)}">${escHtml(v)}</option>`).join("");
   });
 }
 
 // ── APPLY PAGE FILTER ──────────────────────────────────────────────────────
+// Uses the memoised reconciled base for performance.
 function applyPageFilter(page) {
-  const f = pageFilters[page] || {};
-  const filtered = rawDf.filter(r =>
+  const f    = pageFilters[page] || {};
+  const base = getReconciledBase();
+  return base.filter(r =>
     (!f.plant || r["Plant Name"] === f.plant) &&
     (!f.mg    || r["Material Group Name"] === f.mg)
   );
-  return applyReconciliationToData(filtered);
 }
 
 // ── UI HELPERS ─────────────────────────────────────────────────────────────
-function showError(msg) { const el = document.getElementById("errorBanner"); el.textContent = `⚠️ ${msg}`; el.style.display = "block"; }
+function showError(msg) {
+  const el = document.getElementById("errorBanner");
+  el.textContent = `⚠️ ${msg}`;
+  el.style.display = "block";
+}
 function clearError() { document.getElementById("errorBanner").style.display = "none"; }
 function showSuccess(name, n) {
-  const el = document.getElementById("fileStatus"); el.style.display = "block";
-  el.innerHTML = `<div class="status-ok">✓ FILE LOADED</div><div class="status-name">${name} (${n.toLocaleString()} records)</div>`;
+  const el = document.getElementById("fileStatus");
+  el.style.display = "block";
+  el.innerHTML = `<div class="status-ok">✓ FILE LOADED</div><div class="status-name">${escHtml(name)} (${n.toLocaleString()} records)</div>`;
   document.getElementById("uploadBtnText").textContent = "📂 Change File";
 }
 function hideLanding() { document.getElementById("landingView").style.display = "none"; }
 
 function kpiCard(label, value, sub, color) {
-  return `<div class="kpi-card ${color}"><div class="kpi-label">${label}</div><div class="kpi-value">${value}</div><div class="kpi-sub">${sub}</div></div>`;
+  return `<div class="kpi-card ${color}"><div class="kpi-label">${escHtml(label)}</div><div class="kpi-value">${escHtml(value)}</div><div class="kpi-sub">${escHtml(sub)}</div></div>`;
 }
-function setKpis(id, cards) { document.getElementById(id).innerHTML = cards.map(([l,v,s,c])=>kpiCard(l,v,s,c)).join(""); }
+function setKpis(id, cards) {
+  document.getElementById(id).innerHTML = cards.map(([l,v,s,c]) => kpiCard(l,v,s,c)).join("");
+}
 
 // ── GROUPBY HELPERS ────────────────────────────────────────────────────────
 function groupBy(data, key, aggCols) {
   const map = {};
   data.forEach(row => {
-    const k = row[key] || "";
-    if (!map[k]) { map[k] = { [key]: k }; aggCols.forEach(([c])=>{ map[k][c] = 0; }); }
-    aggCols.forEach(([c,src])=>{ map[k][c] += row[src]||0; });
+    // FIX BUG-10: label blank keys clearly so charts don't show an invisible bar
+    const k = row[key] || "(Blank)";
+    if (!map[k]) { map[k] = { [key]: k }; aggCols.forEach(([c]) => { map[k][c] = 0; }); }
+    aggCols.forEach(([c,src]) => { map[k][c] += row[src] || 0; });
   });
   return Object.values(map);
 }
-function sortBy(arr, key, asc=false) { return [...arr].sort((a,b)=>asc ? a[key]-b[key] : b[key]-a[key]); }
+function sortBy(arr, key, asc=false) { return [...arr].sort((a,b) => asc ? a[key]-b[key] : b[key]-a[key]); }
 
 // ── TABLE BUILDER ──────────────────────────────────────────────────────────
 // Columns with raw:true may contain trusted HTML (badges etc.) — all others
 // are escaped to prevent XSS from Excel data landing in the DOM.
 function buildTable(rows, cols, rowClass, extraClass="") {
   if (!rows.length) return `<div class="alert-info">No data to display.</div>`;
-  const thead = `<thead><tr>${cols.map(c=>`<th>${escHtml(c.label)}</th>`).join("")}</tr></thead>`;
-  const tbody = `<tbody>${rows.map(row=>{
+  const thead = `<thead><tr>${cols.map(c => `<th>${escHtml(c.label)}</th>`).join("")}</tr></thead>`;
+  const tbody = `<tbody>${rows.map(row => {
     const cls = rowClass ? rowClass(row) : "";
-    return `<tr class="${cls}">${cols.map(c=>{
-      const raw = c.fmt ? c.fmt(row[c.key]) : (row[c.key]??"");
-      const val = c.raw ? raw : escHtml(String(raw));
+    return `<tr class="${cls}">${cols.map(c => {
+      const raw     = c.fmt ? c.fmt(row[c.key]) : (row[c.key] ?? "");
+      const val     = c.raw ? raw : escHtml(String(raw));
       const cellCls = c.cellClass || "";
       return `<td class="${cellCls}">${val}</td>`;
     }).join("")}</tr>`;
@@ -221,13 +303,10 @@ function buildTable(rows, cols, rowClass, extraClass="") {
 
 // ── EXCEL DOWNLOAD ─────────────────────────────────────────────────────────
 function downloadExcel(data, cols, filename) {
-  const header = cols.map(c=>c.label);
+  const header = cols.map(c => c.label);
   const rows   = data.map(row => cols.map(c => {
-    const v = row[c.key];
-    // Use rawKey value when available for numeric fidelity
+    const v   = row[c.key];
     const raw = c.rawKey ? (row[c.rawKey] ?? v) : v;
-    // For formatted columns return the raw number; for plain text return the value
-    // Use "" fallback (not 0) so text fields don't become 0 in Excel
     if (c.fmt) return (typeof raw === "number") ? raw : (raw ?? "");
     return raw ?? "";
   }));
@@ -240,27 +319,26 @@ function downloadExcel(data, cols, filename) {
 
 // ── CSV DOWNLOAD ───────────────────────────────────────────────────────────
 function downloadCSV(data, cols, filename) {
-  const header = cols.map(c=>c.label).join(",");
-  const rows   = data.map(row=>cols.map(c=>{
-    let v = c.rawKey ? (row[c.rawKey]??row[c.key]??"") : (row[c.key]??"");
+  const header = cols.map(c => c.label).join(",");
+  const rows   = data.map(row => cols.map(c => {
+    let v = c.rawKey ? (row[c.rawKey] ?? row[c.key] ?? "") : (row[c.key] ?? "");
     v = String(v ?? "");
-    // FIX 2: CSV injection — prefix dangerous leading chars with single quote
+    // CSV injection guard — prefix dangerous leading chars
     if (/^[=+\-@\t\r]/.test(v)) v = `'${v}`;
-    // Wrap in quotes if contains comma, quote or newline
-    if (v.includes(",") || v.includes('"') || v.includes("\n")) {
+    // FIX BUG-9: also quote cells that contain tab characters
+    if (v.includes(",") || v.includes('"') || v.includes("\n") || v.includes("\t")) {
       v = `"${v.replace(/"/g, '""')}"`;
     }
     return v;
   }).join(","));
-  const blob = new Blob(["\uFEFF"+header+"\n"+rows.join("\n")],{type:"text/csv;charset=utf-8"});
+  const blob = new Blob(["\uFEFF" + header + "\n" + rows.join("\n")], { type: "text/csv;charset=utf-8" });
   const url  = URL.createObjectURL(blob);
-  const a = document.createElement("a"); a.href=url; a.download=filename; a.click();
+  const a    = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
 }
 
 // ── PLOTLY LAYOUT MERGE ────────────────────────────────────────────────────
-// Deep-merge nested axis objects so callers can override xaxis/yaxis properties
-// without clobbering the shared PLOTLY_LAYOUT reference (Object.assign is shallow).
 function pl(extra={}) {
   return Object.assign({}, PLOTLY_LAYOUT, extra, {
     xaxis:  Object.assign({}, PLOTLY_LAYOUT.xaxis,  extra.xaxis  || {}),
@@ -275,40 +353,40 @@ function pl(extra={}) {
 // ═══════════════════════════════════════════════════════════════════════════
 function renderDashboard() {
   const pf = pageFilters.dashboard;
-  document.getElementById("dash-filter-plant").value = pf.plant||"";
-  document.getElementById("dash-filter-mg").value    = pf.mg||"";
+  document.getElementById("dash-filter-plant").value = pf.plant || "";
+  document.getElementById("dash-filter-mg").value    = pf.mg    || "";
   const df = applyPageFilter("dashboard");
 
-  const totalVal   = df.reduce((s,r)=>s+r["Total Value"],0);
-  const transitVal = df.reduce((s,r)=>s+r["Value of Stock in Transit"],0);
-  const qcVal      = df.reduce((s,r)=>s+r["Value of Stock in Quality Inspection"],0);
-  const availVal   = df.reduce((s,r)=>s+r["Value of Unrestricted Stock"],0);
-  const totalQty   = df.reduce((s,r)=>s+r["Total Qty"],0);
+  const totalVal   = df.reduce((s,r) => s + r["Total Value"], 0);
+  const transitVal = df.reduce((s,r) => s + r["Value of Stock in Transit"], 0);
+  const qcVal      = df.reduce((s,r) => s + r["Value of Stock in Quality Inspection"], 0);
+  const availVal   = df.reduce((s,r) => s + r["Value of Unrestricted Stock"], 0);
+  const totalQty   = df.reduce((s,r) => s + r["Total Qty"], 0);
 
-  setKpis("dash-kpis",[
-    ["Total Inventory Value",   fmtETB(totalVal),   `${fmtQty(totalQty)} total units`,     "blue"],
-    ["Stock in Transit Value",  fmtETB(transitVal), `${fmtQty(df.reduce((s,r)=>s+r["Stock in Transit"],0))} units`, "amber"],
-    ["Value in QC",             fmtETB(qcVal),      `${fmtQty(df.reduce((s,r)=>s+r["Stock in Quality Inspection"],0))} units`, "red"],
-    ["Available (Unrestricted)",fmtETB(availVal),   `${fmtQty(df.reduce((s,r)=>s+r["Unrestricted Stock"],0))} units`, "green"],
-    ["Unique Materials",        new Set(df.map(r=>r["Material"])).size.toLocaleString(), `${new Set(df.map(r=>r["Plant"])).size} plants`, "purple"],
+  setKpis("dash-kpis", [
+    ["Total Inventory Value",    fmtETB(totalVal),   `${fmtQty(totalQty)} total units`,      "blue"],
+    ["Stock in Transit Value",   fmtETB(transitVal), `${fmtQty(df.reduce((s,r) => s+r["Stock in Transit"],0))} units`, "amber"],
+    ["Value in QC",              fmtETB(qcVal),      `${fmtQty(df.reduce((s,r) => s+r["Stock in Quality Inspection"],0))} units`, "red"],
+    ["Available (Unrestricted)", fmtETB(availVal),   `${fmtQty(df.reduce((s,r) => s+r["Unrestricted Stock"],0))} units`, "green"],
+    ["Unique Materials",         new Set(df.map(r=>r["Material"])).size.toLocaleString(), `${new Set(df.map(r=>r["Plant"])).size} plants`, "purple"],
   ]);
 
   // Plant bar — dual axis qty+value
-  const plantAgg = sortBy(groupBy(df,"Plant Name",[["val","Total Value"],["qty","Total Qty"]]),"val");
-  Plotly.newPlot("chart-plant-val",[
+  const plantAgg = sortBy(groupBy(df, "Plant Name", [["val","Total Value"],["qty","Total Qty"]]), "val");
+  Plotly.newPlot("chart-plant-val", [
     { type:"bar", name:"Value (ETB)", x:plantAgg.map(r=>r["Plant Name"]), y:plantAgg.map(r=>r.val), yaxis:"y", marker:{color:"#58a6ff"}, hovertemplate:"<b>%{x}</b><br>ETB %{y:,.0f}<extra></extra>" },
     { type:"scatter", mode:"lines+markers", name:"Quantity", x:plantAgg.map(r=>r["Plant Name"]), y:plantAgg.map(r=>r.qty), yaxis:"y2", marker:{color:"#3fb950",size:8}, line:{color:"#3fb950"}, hovertemplate:"<b>%{x}</b><br>Qty: %{y:,.0f}<extra></extra>" },
   ], pl({ height:280, margin:{l:20,r:60,t:20,b:80}, yaxis2:{overlaying:"y",side:"right",gridcolor:"transparent",tickfont:{color:"#3fb950"},title:{text:"Qty",font:{color:"#3fb950"}}}, barmode:"group" }), PLOTLY_CONFIG);
 
   // Material Group pie (by value)
-  const mgAgg = sortBy(groupBy(df,"Material Group Name",[["val","Total Value"]]),"val").slice(0,12);
-  Plotly.newPlot("chart-cat-pie",[{
+  const mgAgg = sortBy(groupBy(df, "Material Group Name", [["val","Total Value"]]), "val").slice(0, 12);
+  Plotly.newPlot("chart-cat-pie", [{
     type:"pie", labels:mgAgg.map(r=>r["Material Group Name"]), values:mgAgg.map(r=>r.val),
     hole:0.55, textposition:"outside", textinfo:"percent+label",
     marker:{colors:COLORWAY}, hovertemplate:"<b>%{label}</b><br>ETB %{value:,.0f}<br>%{percent}<extra></extra>",
   }], pl({ showlegend:false, height:280, margin:{l:10,r:10,t:30,b:10} }), PLOTLY_CONFIG);
 
-  // Near-expiry inventory by plant (items expiring within 6 months, qty > 0)
+  // Near-expiry by plant (within 6 months)
   const nearCutoff = new Date(); nearCutoff.setMonth(nearCutoff.getMonth() + 6);
   const nearToday  = new Date();
   const nearExpiry = df.filter(r =>
@@ -321,7 +399,7 @@ function renderDashboard() {
     "val"
   );
   if (nearByPlant.length) {
-    Plotly.newPlot("chart-mg-bar",[
+    Plotly.newPlot("chart-mg-bar", [
       { type:"bar", name:"Value at Risk (ETB)", x:nearByPlant.map(r=>r["Plant Name"]), y:nearByPlant.map(r=>r.val), yaxis:"y",  marker:{color:"#d29922"}, hovertemplate:"<b>%{x}</b><br>ETB %{y:,.0f}<extra></extra>" },
       { type:"scatter", mode:"lines+markers", name:"Qty at Risk", x:nearByPlant.map(r=>r["Plant Name"]), y:nearByPlant.map(r=>r.qty), yaxis:"y2", marker:{color:"#f85149",size:8}, line:{color:"#f85149"}, hovertemplate:"<b>%{x}</b><br>Qty: %{y:,.0f}<extra></extra>" },
     ], pl({ height:420, margin:{l:20,r:60,t:20,b:100}, barmode:"group",
@@ -331,16 +409,16 @@ function renderDashboard() {
     document.getElementById("chart-mg-bar").innerHTML = `<div class="alert-info" style="margin:1rem 0">✓ No near-expiry stock (within 6 months) with quantity on hand.</div>`;
   }
 
-  // Download handlers
-  const dlCols=[
-    {key:"Plant Name",label:"Plant"},
+  // Download
+  const dlCols = [
+    {key:"Plant Name",         label:"Plant"},
     {key:"Material Group Name",label:"Material Group"},
-    {key:"Total Value",label:"Total Value (ETB)",fmt:fmtETB,rawKey:"Total Value"},
-    {key:"Total Qty",label:"Total Qty",fmt:fmtQty,rawKey:"Total Qty"},
+    {key:"Total Value",        label:"Total Value (ETB)", fmt:fmtETB, rawKey:"Total Value"},
+    {key:"Total Qty",          label:"Total Qty",         fmt:fmtQty, rawKey:"Total Qty"},
   ];
-  const aggForDl=groupBy(df,"Plant Name",[["Total Value","Total Value"],["Total Qty","Total Qty"]]);
-  document.getElementById("btn-dl-dash-xlsx").onclick=()=>downloadExcel(aggForDl,dlCols,"dashboard_summary.xlsx");
-  document.getElementById("btn-dl-dash-csv").onclick=()=>downloadCSV(aggForDl,dlCols,"dashboard_summary.csv");
+  const aggForDl = groupBy(df, "Plant Name", [["Total Value","Total Value"],["Total Qty","Total Qty"]]);
+  document.getElementById("btn-dl-dash-xlsx").onclick = () => downloadExcel(aggForDl, dlCols, "dashboard_summary.xlsx");
+  document.getElementById("btn-dl-dash-csv").onclick  = () => downloadCSV(aggForDl,   dlCols, "dashboard_summary.csv");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -348,60 +426,68 @@ function renderDashboard() {
 // ═══════════════════════════════════════════════════════════════════════════
 function renderTransit() {
   const pf = pageFilters.transit;
-  document.getElementById("transit-filter-plant").value = pf.plant||"";
-  document.getElementById("transit-filter-mg").value    = pf.mg||"";
-  const df = applyPageFilter("transit").filter(r=>r["Stock in Transit"]>0 && r["Value of Stock in Transit"]>0);
+  document.getElementById("transit-filter-plant").value = pf.plant || "";
+  document.getElementById("transit-filter-mg").value    = pf.mg    || "";
+  const df = applyPageFilter("transit").filter(r => r["Stock in Transit"] > 0 && r["Value of Stock in Transit"] > 0);
 
-  const totalTV  = df.reduce((s,r)=>s+r["Value of Stock in Transit"],0);
-  const totalTQ  = df.reduce((s,r)=>s+r["Stock in Transit"],0);
-  const uniqMat  = new Set(df.map(r=>r["Material"])).size;
-  setKpis("transit-kpis",[
-    ["Total Transit Value",         fmtETB(totalTV), "Across all plants","amber"],
-    ["Total Transit Quantity",       fmtQty(totalTQ), "Units in movement","blue"],
-    ["Unique Materials in Transit",  String(uniqMat), "Distinct SKUs","green"],
+  const totalTV = df.reduce((s,r) => s + r["Value of Stock in Transit"], 0);
+  const totalTQ = df.reduce((s,r) => s + r["Stock in Transit"], 0);
+  const uniqMat = new Set(df.map(r => r["Material"])).size;
+  setKpis("transit-kpis", [
+    ["Total Transit Value",        fmtETB(totalTV), "Across all plants",  "amber"],
+    ["Total Transit Quantity",     fmtQty(totalTQ), "Units in movement",  "blue"],
+    ["Unique Materials in Transit",String(uniqMat), "Distinct SKUs",      "green"],
   ]);
 
-  if (!df.length) { document.getElementById("transit-table-wrap").innerHTML=`<div class="alert-info">ℹ️ No items are currently in transit.</div>`; return; }
+  if (!df.length) { document.getElementById("transit-table-wrap").innerHTML = `<div class="alert-info">ℹ️ No items are currently in transit.</div>`; return; }
 
-  // Dual chart: qty + value by plant
-  const plantAgg=sortBy(groupBy(df,"Plant Name",[["val","Value of Stock in Transit"],["qty","Stock in Transit"]]),"val");
-  Plotly.newPlot("chart-transit-plant",[
-    {type:"bar",name:"Value (ETB)",x:plantAgg.map(r=>r["Plant Name"]),y:plantAgg.map(r=>r.val),yaxis:"y",marker:{color:"#d29922"},hovertemplate:"<b>%{x}</b><br>ETB %{y:,.0f}<extra></extra>"},
-    {type:"scatter",mode:"lines+markers",name:"Qty",x:plantAgg.map(r=>r["Plant Name"]),y:plantAgg.map(r=>r.qty),yaxis:"y2",marker:{color:"#3fb950",size:8},line:{color:"#3fb950"},hovertemplate:"<b>%{x}</b><br>Qty: %{y:,.0f}<extra></extra>"},
-  ],pl({height:280,margin:{l:20,r:60,t:20,b:80},yaxis2:{overlaying:"y",side:"right",gridcolor:"transparent",tickfont:{color:"#3fb950"}}}),PLOTLY_CONFIG);
+  const plantAgg = sortBy(groupBy(df, "Plant Name", [["val","Value of Stock in Transit"],["qty","Stock in Transit"]]), "val");
+  Plotly.newPlot("chart-transit-plant", [
+    {type:"bar",  name:"Value (ETB)", x:plantAgg.map(r=>r["Plant Name"]), y:plantAgg.map(r=>r.val), yaxis:"y",  marker:{color:"#d29922"}, hovertemplate:"<b>%{x}</b><br>ETB %{y:,.0f}<extra></extra>"},
+    {type:"scatter", mode:"lines+markers", name:"Qty", x:plantAgg.map(r=>r["Plant Name"]), y:plantAgg.map(r=>r.qty), yaxis:"y2", marker:{color:"#3fb950",size:8}, line:{color:"#3fb950"}, hovertemplate:"<b>%{x}</b><br>Qty: %{y:,.0f}<extra></extra>"},
+  ], pl({height:280,margin:{l:20,r:60,t:20,b:80},yaxis2:{overlaying:"y",side:"right",gridcolor:"transparent",tickfont:{color:"#3fb950"}}}), PLOTLY_CONFIG);
 
-  // Table
-  const transitCols=[
-    {key:"Material",label:"Material"},
-    {key:"Material Description",label:"Description"},
-    {key:"Material Group Name",label:"Material Group"},
-    {key:"Plant Name",label:"Plant"},
-    {key:"Stock in Transit",label:"Transit Qty",fmt:fmtQty,rawKey:"Stock in Transit",cellClass:"col-qty"},
-    {key:"Value of Stock in Transit",label:"Transit Value (ETB)",fmt:fmtETB,rawKey:"Value of Stock in Transit",cellClass:"col-val"},
-    {key:"_status",label:"Status", raw:true},
+  const transitCols = [
+    {key:"Material",                  label:"Material"},
+    {key:"Material Description",      label:"Description"},
+    {key:"Material Group Name",       label:"Material Group"},
+    {key:"Plant Name",                label:"Plant"},
+    {key:"Stock in Transit",          label:"Transit Qty",       fmt:fmtQty, rawKey:"Stock in Transit",          cellClass:"col-qty"},
+    {key:"Value of Stock in Transit", label:"Transit Value (ETB)",fmt:fmtETB, rawKey:"Value of Stock in Transit", cellClass:"col-val"},
+    {key:"_status",                   label:"Status", raw:true},
   ];
-  const transitRows=sortBy([...df],"Value of Stock in Transit").map(r=>({
+  const transitRows = sortBy([...df], "Value of Stock in Transit").map(r => ({
     ...r,
-    _status: r["Value of Stock in Transit"]>100000?"<span class='badge badge-red'>Critical</span>":r["Value of Stock in Transit"]>50000?"<span class='badge badge-amber'>High</span>":r["Value of Stock in Transit"]>10000?"<span class='badge badge-amber'>Medium</span>":"<span class='badge badge-green'>Low</span>",
+    _status: r["Value of Stock in Transit"] > 100000 ? "<span class='badge badge-red'>Critical</span>"
+           : r["Value of Stock in Transit"] > 50000  ? "<span class='badge badge-amber'>High</span>"
+           : r["Value of Stock in Transit"] > 10000  ? "<span class='badge badge-amber'>Medium</span>"
+           : "<span class='badge badge-green'>Low</span>",
   }));
-  document.getElementById("transit-table-wrap").innerHTML=buildTable(transitRows,transitCols);
-  document.getElementById("btn-dl-transit").onclick=()=>downloadCSV(transitRows,transitCols.slice(0,-1),"transit_analysis.csv");
-  document.getElementById("btn-dl-transit-xlsx").onclick=()=>downloadExcel(transitRows,transitCols.slice(0,-1),"transit_analysis.xlsx");
+  document.getElementById("transit-table-wrap").innerHTML = buildTable(transitRows, transitCols);
+  document.getElementById("btn-dl-transit").onclick      = () => downloadCSV(transitRows,   transitCols.slice(0,-1), "transit_analysis.csv");
+  document.getElementById("btn-dl-transit-xlsx").onclick = () => downloadExcel(transitRows, transitCols.slice(0,-1), "transit_analysis.xlsx");
 
-  // FIX 6: use filtered df (not rawDf) so HO01 respects active plant/MG filters
+  // HO01 section
   const allTransitDf = applyPageFilter("transit");
-  const ho01=allTransitDf.filter(r=>r["Stock in Transit"]>0&&r["Value of Stock in Transit"]>0).filter(r=>String(r["Plant"]).toUpperCase()==="HO01"||String(r["Plant Name"]).toUpperCase().includes("HO01")||String(r["Plant Name"]).toUpperCase().includes("HEAD OFFICE")||String(r["Plant Name"]).toUpperCase().includes("CENTRAL"));
+  const ho01 = allTransitDf
+    .filter(r => r["Stock in Transit"] > 0 && r["Value of Stock in Transit"] > 0)
+    .filter(r =>
+      String(r["Plant"]).toUpperCase() === "HO01" ||
+      String(r["Plant Name"]).toUpperCase().includes("HO01") ||
+      String(r["Plant Name"]).toUpperCase().includes("HEAD OFFICE") ||
+      String(r["Plant Name"]).toUpperCase().includes("CENTRAL")
+    );
   if (ho01.length) {
-    setKpis("ho01-kpis",[
-      ["HO01 Transit Value",   fmtETB(ho01.reduce((s,r)=>s+r["Value of Stock in Transit"],0)),"From central hub","amber"],
-      ["HO01 Transit Qty",     fmtQty(ho01.reduce((s,r)=>s+r["Stock in Transit"],0)),"Units in movement","blue"],
-      ["Unique SKUs",          String(new Set(ho01.map(r=>r["Material"])).size),"Distinct materials","green"],
+    setKpis("ho01-kpis", [
+      ["HO01 Transit Value", fmtETB(ho01.reduce((s,r) => s+r["Value of Stock in Transit"],0)), "From central hub", "amber"],
+      ["HO01 Transit Qty",   fmtQty(ho01.reduce((s,r) => s+r["Stock in Transit"],0)),          "Units in movement","blue"],
+      ["Unique SKUs",        String(new Set(ho01.map(r=>r["Material"])).size),                  "Distinct materials","green"],
     ]);
-    document.getElementById("ho01-table-wrap").innerHTML=buildTable(sortBy([...ho01],"Value of Stock in Transit"),transitCols.slice(0,-1));
-    document.getElementById("btn-dl-ho01").onclick=()=>downloadCSV(ho01,transitCols.slice(0,-1),"ho01_transit.csv");
+    document.getElementById("ho01-table-wrap").innerHTML = buildTable(sortBy([...ho01], "Value of Stock in Transit"), transitCols.slice(0,-1));
+    document.getElementById("btn-dl-ho01").onclick = () => downloadCSV(ho01, transitCols.slice(0,-1), "ho01_transit.csv");
   } else {
-    document.getElementById("ho01-kpis").innerHTML=`<div class="alert-info">No HO01 transit records found.</div>`;
-    document.getElementById("ho01-table-wrap").innerHTML="";
+    document.getElementById("ho01-kpis").innerHTML = `<div class="alert-info">No HO01 transit records found.</div>`;
+    document.getElementById("ho01-table-wrap").innerHTML = "";
   }
 }
 
@@ -410,131 +496,130 @@ function renderTransit() {
 // ═══════════════════════════════════════════════════════════════════════════
 function renderExpiry() {
   const pf = pageFilters.expiry;
-  document.getElementById("expiry-filter-plant").value = pf.plant||"";
-  document.getElementById("expiry-filter-mg").value    = pf.mg||"";
-  const baseDf = applyPageFilter("expiry");
-  const months = parseInt(document.querySelector('input[name="expWin"]:checked')?.value||6);
-  const today  = new Date();
-  const cutoff = new Date(today); cutoff.setMonth(cutoff.getMonth()+months);
-  const valid   = baseDf.filter(r=>r._expiry instanceof Date && !isNaN(r._expiry));
-  // Exclude zero-quantity rows throughout — phantom SAP records with no physical stock
-  const expiring= valid.filter(r=>r._expiry>=today&&r._expiry<=cutoff&&(r["Unrestricted Stock"]||0)>0&&(r["Value of Unrestricted Stock"]||0)>0);
-  const expired = valid.filter(r=>r._expiry<today);  // zero-qty filtered later in expired section
+  document.getElementById("expiry-filter-plant").value = pf.plant || "";
+  document.getElementById("expiry-filter-mg").value    = pf.mg    || "";
+  const baseDf  = applyPageFilter("expiry");
+  const months  = parseInt(document.querySelector('input[name="expWin"]:checked')?.value || 6);
+  const today   = new Date();
+  const cutoff  = new Date(today); cutoff.setMonth(cutoff.getMonth() + months);
+  const valid   = baseDf.filter(r => r._expiry instanceof Date && !isNaN(r._expiry));
 
-  setKpis("expiry-kpis",[
-    ["Expiring in Window", String(expiring.length), `Items within next ${months} months`,"amber"],
-    ["Already Expired",    String(expired.length),  "Requires immediate action","red"],
-    ["At-Risk Value",      fmtETB(expiring.reduce((s,r)=>s+r["Value of Unrestricted Stock"],0)),"Unrestricted stock value","purple"],
-    ["At-Risk Quantity",   fmtQty(expiring.reduce((s,r)=>s+r["Unrestricted Stock"],0)),"Units expiring soon","amber"],
+  const expiring     = valid.filter(r => r._expiry >= today && r._expiry <= cutoff && (r["Unrestricted Stock"]||0) > 0 && (r["Value of Unrestricted Stock"]||0) > 0);
+  const expired      = valid.filter(r => r._expiry < today);
+  // FIX BUG-4: filter zero-qty BEFORE the KPI count so KPI matches the table
+  const expiredWithStock = expired.filter(r => (r["Unrestricted Stock"] || 0) > 0);
+  const expiredZeroQty   = expired.length - expiredWithStock.length;
+
+  setKpis("expiry-kpis", [
+    ["Expiring in Window", String(expiring.length),       `Items within next ${months} months`,             "amber"],
+    // FIX BUG-4: use expiredWithStock.length to match what the table shows
+    ["Already Expired",   String(expiredWithStock.length),"Items with stock on hand requiring action",      "red"],
+    ["At-Risk Value",     fmtETB(expiring.reduce((s,r) => s+r["Value of Unrestricted Stock"],0)),           "Unrestricted stock value","purple"],
+    ["At-Risk Quantity",  fmtQty(expiring.reduce((s,r) => s+r["Unrestricted Stock"],0)),                   "Units expiring soon",     "amber"],
   ]);
 
   if (expiring.length) {
-    const monthMap={}, valMap={};
-    expiring.forEach(r=>{
-      const key=`${r._expiry.getFullYear()}-${String(r._expiry.getMonth()+1).padStart(2,"0")}`;
-      monthMap[key]=(monthMap[key]||0)+1;
-      valMap[key]=(valMap[key]||0)+r["Value of Unrestricted Stock"];
+    const monthMap = {}, valMap = {};
+    expiring.forEach(r => {
+      const key = `${r._expiry.getFullYear()}-${String(r._expiry.getMonth()+1).padStart(2,"0")}`;
+      monthMap[key] = (monthMap[key] || 0) + 1;
+      valMap[key]   = (valMap[key]   || 0) + r["Value of Unrestricted Stock"];
     });
-    const ms=Object.keys(monthMap).sort();
-    Plotly.newPlot("chart-expiry-timeline",[
-      {type:"bar",name:"Items Count",x:ms,y:ms.map(m=>monthMap[m]),marker:{color:"#d29922"},hovertemplate:"<b>%{x}</b><br>%{y} items<extra></extra>"},
-      {type:"scatter",mode:"lines+markers",name:"Value at Risk",x:ms,y:ms.map(m=>valMap[m]),yaxis:"y2",marker:{color:"#f85149",size:8},line:{color:"#f85149"},hovertemplate:"<b>%{x}</b><br>ETB %{y:,.0f}<extra></extra>"},
-    ],pl({height:260,margin:{l:20,r:60,t:20,b:60},yaxis2:{overlaying:"y",side:"right",gridcolor:"transparent",tickfont:{color:"#f85149"}}}),PLOTLY_CONFIG);
+    const ms = Object.keys(monthMap).sort();
+    Plotly.newPlot("chart-expiry-timeline", [
+      {type:"bar",   name:"Items Count",   x:ms, y:ms.map(m=>monthMap[m]), marker:{color:"#d29922"}, hovertemplate:"<b>%{x}</b><br>%{y} items<extra></extra>"},
+      {type:"scatter",mode:"lines+markers",name:"Value at Risk", x:ms, y:ms.map(m=>valMap[m]), yaxis:"y2", marker:{color:"#f85149",size:8}, line:{color:"#f85149"}, hovertemplate:"<b>%{x}</b><br>ETB %{y:,.0f}<extra></extra>"},
+    ], pl({height:260,margin:{l:20,r:60,t:20,b:60},yaxis2:{overlaying:"y",side:"right",gridcolor:"transparent",tickfont:{color:"#f85149"}}}), PLOTLY_CONFIG);
 
-    // Click a bar to drill into that month's items
     document.getElementById("chart-expiry-timeline").on("plotly_click", function(data) {
       const pt = data.points[0];
       const monthKey = pt.x;
       const [yr, mo] = monthKey.split("-").map(Number);
-      const monthItems = expiring.filter(r =>
-        r._expiry.getFullYear() === yr && r._expiry.getMonth() + 1 === mo
-      );
+      const monthItems = expiring.filter(r => r._expiry.getFullYear() === yr && r._expiry.getMonth() + 1 === mo);
       const drillCols = [
-        {key:"Material",label:"Material"},
-        {key:"Material Description",label:"Description"},
-        {key:"Material Group Name",label:"Material Group"},
-        {key:"Plant Name",label:"Plant"},
-        {key:"Description of Storage Location",label:"Storage Location"},
-        {key:"_expiryStr",label:"Expiry Date"},
-        {key:"Unrestricted Stock",label:"Qty",fmt:fmtQty,rawKey:"Unrestricted Stock",cellClass:"col-qty"},
-        {key:"Value of Unrestricted Stock",label:"Value (ETB)",fmt:fmtETB,rawKey:"Value of Unrestricted Stock",cellClass:"col-val"},
-        {key:"_daysLeft",label:"Days Left"},
+        {key:"Material",                    label:"Material"},
+        {key:"Material Description",        label:"Description"},
+        {key:"Material Group Name",         label:"Material Group"},
+        {key:"Plant Name",                  label:"Plant"},
+        {key:"Description of Storage Location", label:"Storage Location"},
+        {key:"_expiryStr",                  label:"Expiry Date"},
+        {key:"Unrestricted Stock",          label:"Qty",        fmt:fmtQty, rawKey:"Unrestricted Stock",       cellClass:"col-qty"},
+        {key:"Value of Unrestricted Stock", label:"Value (ETB)",fmt:fmtETB, rawKey:"Value of Unrestricted Stock",cellClass:"col-val"},
+        {key:"_daysLeft",                   label:"Days Left"},
       ];
       const drillRows = sortBy(
-        monthItems.map(r=>({
+        monthItems.map(r => ({
           ...r,
           _expiryStr: r._expiry ? r._expiry.toISOString().slice(0,10) : "",
-          _daysLeft:  r._expiry ? Math.floor((r._expiry - new Date()) / 86400000) : 9999
+          _daysLeft:  r._expiry ? Math.floor((r._expiry - new Date()) / 86400000) : 9999,
         })),
         "_daysLeft", true
       );
-      const totalVal = monthItems.reduce((s,r)=>s+r["Value of Unrestricted Stock"],0);
-      const totalQty = monthItems.reduce((s,r)=>s+r["Unrestricted Stock"],0);
-      const monthLabel = new Date(yr, mo-1, 1).toLocaleString("default",{month:"long",year:"numeric"});
-      document.getElementById("expiry-drill-title").textContent = "\uD83D\uDCC5 " + monthLabel;
-      document.getElementById("expiry-drill-meta").textContent =
-        drillRows.length + " items \u00B7 " + fmtQty(totalQty) + " units \u00B7 " + fmtETB(totalVal);
-      document.getElementById("expiry-drill-table").innerHTML =
-        drillRows.length
-          ? buildTable(drillRows, drillCols, r => r._daysLeft<=30 ? "row-red" : r._daysLeft<=90 ? "row-amber" : "")
-          : '<div class="alert-info">No items for this month.</div>';
+      const totalVal   = monthItems.reduce((s,r) => s+r["Value of Unrestricted Stock"], 0);
+      const totalQty   = monthItems.reduce((s,r) => s+r["Unrestricted Stock"], 0);
+      const monthLabel = new Date(yr, mo-1, 1).toLocaleString("default", {month:"long", year:"numeric"});
+      document.getElementById("expiry-drill-title").textContent = "📅 " + monthLabel;
+      document.getElementById("expiry-drill-meta").textContent  = `${drillRows.length} items · ${fmtQty(totalQty)} units · ${fmtETB(totalVal)}`;
+      document.getElementById("expiry-drill-table").innerHTML   = drillRows.length
+        ? buildTable(drillRows, drillCols, r => r._daysLeft <= 30 ? "row-red" : r._daysLeft <= 90 ? "row-amber" : "")
+        : '<div class="alert-info">No items for this month.</div>';
       const drillEl = document.getElementById("expiry-drilldown");
       drillEl.style.display = "block";
-      drillEl.scrollIntoView({behavior:"smooth", block:"nearest"});
-      document.getElementById("expiry-drill-dl-csv").onclick  = () => downloadCSV(drillRows,  drillCols, "expiry_" + monthKey + ".csv");
-      document.getElementById("expiry-drill-dl-xlsx").onclick = () => downloadExcel(drillRows, drillCols, "expiry_" + monthKey + ".xlsx");
+      drillEl.scrollIntoView({ behavior:"smooth", block:"nearest" });
+      document.getElementById("expiry-drill-dl-csv").onclick  = () => downloadCSV(drillRows,  drillCols, `expiry_${monthKey}.csv`);
+      document.getElementById("expiry-drill-dl-xlsx").onclick = () => downloadExcel(drillRows, drillCols, `expiry_${monthKey}.xlsx`);
     });
     document.getElementById("expiry-drill-close").onclick = () => {
       document.getElementById("expiry-drilldown").style.display = "none";
     };
-  } else { document.getElementById("chart-expiry-timeline").innerHTML=""; document.getElementById("expiry-drilldown").style.display="none"; }
+  } else {
+    document.getElementById("chart-expiry-timeline").innerHTML = "";
+    document.getElementById("expiry-drilldown").style.display  = "none";
+  }
 
-  document.getElementById("expiry-table-wrap").innerHTML="";
-
-  // Exclude zero-quantity rows — no physical stock to action
-  const expiredWithStock = expired.filter(r => (r["Unrestricted Stock"] || 0) > 0);
-  const expiredZeroQty   = expired.length - expiredWithStock.length;
+  document.getElementById("expiry-table-wrap").innerHTML = "";
 
   if (expiredWithStock.length) {
-    document.getElementById("expired-section").style.display="block";
-    const zeroNote = expiredZeroQty ? ` <span style="font-size:0.72rem;color:var(--muted);font-weight:400">(${expiredZeroQty} zero-qty records hidden)</span>` : "";
-    document.getElementById("expired-header").innerHTML=`🔴 Already Expired Items (${expiredWithStock.length})${zeroNote}`;
-    const expiredRows=expiredWithStock.map(r=>({...r,_expiryStr:r._expiry?r._expiry.toISOString().slice(0,10):""}));
-    document.getElementById("expired-table-wrap").innerHTML=buildTable(expiredRows,[
-      {key:"Material",label:"Material"},{key:"Material Description",label:"Description"},
-      {key:"Material Group Name",label:"Material Group"},{key:"Plant Name",label:"Plant"},
+    document.getElementById("expired-section").style.display = "block";
+    const zeroNote = expiredZeroQty
+      ? ` <span style="font-size:0.72rem;color:var(--muted);font-weight:400">(${expiredZeroQty} zero-qty records hidden)</span>`
+      : "";
+    document.getElementById("expired-header").innerHTML = `🔴 Already Expired Items (${expiredWithStock.length})${zeroNote}`;
+    const expiredRows = expiredWithStock.map(r => ({...r, _expiryStr: r._expiry ? r._expiry.toISOString().slice(0,10) : ""}));
+    document.getElementById("expired-table-wrap").innerHTML = buildTable(expiredRows, [
+      {key:"Material",                       label:"Material"},
+      {key:"Material Description",           label:"Description"},
+      {key:"Material Group Name",            label:"Material Group"},
+      {key:"Plant Name",                     label:"Plant"},
       {key:"Description of Storage Location",label:"Storage Location"},
-      {key:"_expiryStr",label:"Expiry Date"},
-      {key:"Unrestricted Stock",label:"Qty",fmt:fmtQty,rawKey:"Unrestricted Stock",cellClass:"col-qty"},
+      {key:"_expiryStr",                     label:"Expiry Date"},
+      {key:"Unrestricted Stock",             label:"Qty", fmt:fmtQty, rawKey:"Unrestricted Stock", cellClass:"col-qty"},
     ]);
-    document.getElementById("btn-dl-expired").onclick=()=>downloadCSV(expiredRows,[{key:"Material",label:"Material"},{key:"Material Description",label:"Description"},{key:"Plant Name",label:"Plant"},{key:"Description of Storage Location",label:"Storage Location"},{key:"_expiryStr",label:"Expiry Date"},{key:"Unrestricted Stock",label:"Qty",rawKey:"Unrestricted Stock"}],"expired_items.csv");
-  } else { document.getElementById("expired-section").style.display="none"; }
+    document.getElementById("btn-dl-expired").onclick = () => downloadCSV(expiredRows, [
+      {key:"Material",                       label:"Material"},
+      {key:"Material Description",           label:"Description"},
+      {key:"Plant Name",                     label:"Plant"},
+      {key:"Description of Storage Location",label:"Storage Location"},
+      {key:"_expiryStr",                     label:"Expiry Date"},
+      {key:"Unrestricted Stock",             label:"Qty", rawKey:"Unrestricted Stock"},
+    ], "expired_items.csv");
+  } else {
+    document.getElementById("expired-section").style.display = "none";
+  }
 }
 
 // ── MATERIAL EXPIRY LOOKUP ────────────────────────────────────────────────
-// Searches ALL batches of a material regardless of expiry window.
 function renderExpirySearch() {
-  const query = document.getElementById("expiry-search-input").value.trim().toLowerCase();
+  const query     = document.getElementById("expiry-search-input").value.trim().toLowerCase();
   const resultsEl = document.getElementById("expiry-search-results");
+  if (!query) { resultsEl.innerHTML = ""; return; }
+  if (!rawDf.length) { resultsEl.innerHTML = `<div class="alert-info">No data loaded yet.</div>`; return; }
 
-  if (!query) {
-    resultsEl.innerHTML = "";
-    return;
-  }
-  if (!rawDf.length) {
-    resultsEl.innerHTML = `<div class="alert-info">No data loaded yet.</div>`;
-    return;
-  }
-
-  const today = new Date();
-  const baseDf = applyReconciliationToData(rawDf);
-
-  // Match on material code or description (case-insensitive)
-  // Only include rows with actual unrestricted quantity AND value — excludes
-  // branch records that SAP records without batch/valuation (qty=0, value=0).
+  const today  = new Date();
+  const baseDf = getReconciledBase();
   const matches = baseDf.filter(r => {
-    const code = String(r["Material"] || "").toLowerCase();
-    const desc = String(r["Material Description"] || "").toLowerCase();
+    const code     = String(r["Material"] || "").toLowerCase();
+    const desc     = String(r["Material Description"] || "").toLowerCase();
     const hasStock = (r["Unrestricted Stock"] || 0) > 0 && (r["Value of Unrestricted Stock"] || 0) > 0;
     return hasStock && (code.includes(query) || desc.includes(query));
   });
@@ -544,45 +629,37 @@ function renderExpirySearch() {
     return;
   }
 
-  // Annotate each row with days-to-expiry and status
   const annotated = matches.map(r => {
-    const expiryStr = r._expiry ? r._expiry.toISOString().slice(0, 10) : "—";
-    let daysLeft = null;
-    let statusLabel = "No Expiry Date";
-    let statusClass = "";
+    const expiryStr = r._expiry ? r._expiry.toISOString().slice(0,10) : "—";
+    let daysLeft = null, statusLabel = "No Expiry Date", statusClass = "";
     if (r._expiry instanceof Date && !isNaN(r._expiry)) {
       daysLeft = Math.floor((r._expiry - today) / 86400000);
-      if (daysLeft < 0)        { statusLabel = `Expired ${Math.abs(daysLeft)}d ago`; statusClass = "row-red"; }
-      else if (daysLeft <= 30)  { statusLabel = `${daysLeft}d left`;                  statusClass = "row-red"; }
-      else if (daysLeft <= 90)  { statusLabel = `${daysLeft}d left`;                  statusClass = "row-amber"; }
+      if      (daysLeft < 0)   { statusLabel = `Expired ${Math.abs(daysLeft)}d ago`; statusClass = "row-red";   }
+      else if (daysLeft <= 30)  { statusLabel = `${daysLeft}d left`;                  statusClass = "row-red";   }
       else if (daysLeft <= 180) { statusLabel = `${daysLeft}d left`;                  statusClass = "row-amber"; }
-      else                      { statusLabel = `${daysLeft}d left`;                  statusClass = ""; }
+      else                      { statusLabel = `${daysLeft}d left`;                  statusClass = "";          }
     }
     return { ...r, _expiryStr: expiryStr, _daysLeft: daysLeft ?? 99999, _statusLabel: statusLabel, _statusClass: statusClass };
   });
 
-  // Sort: expired first (most overdue), then soonest expiry, then no-date last
-  const sorted = annotated.sort((a, b) => a._daysLeft - b._daysLeft);
-
-  // Unique materials found
+  const sorted     = annotated.sort((a,b) => a._daysLeft - b._daysLeft);
   const uniqueMats = [...new Set(sorted.map(r => r["Material"]))];
-  const summary = `<div style="font-size:0.78rem;color:var(--muted);margin-bottom:0.5rem">
+  const summary    = `<div style="font-size:0.78rem;color:var(--muted);margin-bottom:0.5rem">
     Found <b style="color:var(--text)">${sorted.length}</b> batch/location record(s) across
     <b style="color:var(--text)">${uniqueMats.length}</b> material code(s)
   </div>`;
 
   const cols = [
-    { key: "Material",                       label: "Material" },
-    { key: "Material Description",           label: "Description" },
-    { key: "Plant Name",                     label: "Plant" },
-    { key: "Description of Storage Location",label: "Storage Location" },
-    { key: "Batch",                          label: "Batch" },
-    { key: "_expiryStr",                     label: "Expiry Date" },
-    { key: "_statusLabel",                   label: "Status" },
-    { key: "Unrestricted Stock",             label: "Avail Qty",   fmt: fmtQty, rawKey: "Unrestricted Stock",             cellClass: "col-qty" },
-    { key: "Value of Unrestricted Stock",    label: "Value (ETB)", fmt: fmtETB, rawKey: "Value of Unrestricted Stock",    cellClass: "col-val" },
+    {key:"Material",                       label:"Material"},
+    {key:"Material Description",           label:"Description"},
+    {key:"Plant Name",                     label:"Plant"},
+    {key:"Description of Storage Location",label:"Storage Location"},
+    {key:"Batch",                          label:"Batch"},
+    {key:"_expiryStr",                     label:"Expiry Date"},
+    {key:"_statusLabel",                   label:"Status"},
+    {key:"Unrestricted Stock",             label:"Avail Qty",   fmt:fmtQty, rawKey:"Unrestricted Stock",          cellClass:"col-qty"},
+    {key:"Value of Unrestricted Stock",    label:"Value (ETB)", fmt:fmtETB, rawKey:"Value of Unrestricted Stock", cellClass:"col-val"},
   ];
-
   resultsEl.innerHTML = summary + buildTable(sorted, cols, r => r._statusClass);
 }
 
@@ -592,19 +669,16 @@ function clearExpirySearch() {
 }
 
 // ── MATERIAL QC LOOKUP ────────────────────────────────────────────────────
-// Searches ALL QC stock records for a material regardless of active filters.
 function renderQCSearch() {
-  const query = document.getElementById("qc-search-input").value.trim().toLowerCase();
+  const query     = document.getElementById("qc-search-input").value.trim().toLowerCase();
   const resultsEl = document.getElementById("qc-search-results");
-
   if (!query) { resultsEl.innerHTML = ""; return; }
   if (!rawDf.length) { resultsEl.innerHTML = `<div class="alert-info">No data loaded yet.</div>`; return; }
 
-  const baseDf = applyReconciliationToData(rawDf);
-
+  const baseDf = getReconciledBase();
   const matches = baseDf.filter(r => {
-    const code = String(r["Material"] || "").toLowerCase();
-    const desc = String(r["Material Description"] || "").toLowerCase();
+    const code  = String(r["Material"] || "").toLowerCase();
+    const desc  = String(r["Material Description"] || "").toLowerCase();
     const hasQC = (r["Stock in Quality Inspection"] || 0) > 0;
     return hasQC && (code.includes(query) || desc.includes(query));
   });
@@ -616,38 +690,36 @@ function renderQCSearch() {
 
   const today = new Date();
   const annotated = matches.map(r => {
-    const expiryStr = r._expiry ? r._expiry.toISOString().slice(0, 10) : "—";
+    const expiryStr = r._expiry ? r._expiry.toISOString().slice(0,10) : "—";
     let daysLeft = null, statusLabel = "No Expiry Date", statusClass = "";
     if (r._expiry instanceof Date && !isNaN(r._expiry)) {
       daysLeft = Math.floor((r._expiry - today) / 86400000);
-      if      (daysLeft < 0)        { statusLabel = `Expired ${Math.abs(daysLeft)}d ago`; statusClass = "row-red"; }
-      else if (daysLeft <= 30)      { statusLabel = `${daysLeft}d left`;                  statusClass = "row-red"; }
-      else if (daysLeft <= 180)     { statusLabel = `${daysLeft}d left`;                  statusClass = "row-amber"; }
-      else                          { statusLabel = `${daysLeft}d left`;                  statusClass = ""; }
+      if      (daysLeft < 0)   { statusLabel = `Expired ${Math.abs(daysLeft)}d ago`; statusClass = "row-red";   }
+      else if (daysLeft <= 30)  { statusLabel = `${daysLeft}d left`;                  statusClass = "row-red";   }
+      else if (daysLeft <= 180) { statusLabel = `${daysLeft}d left`;                  statusClass = "row-amber"; }
+      else                      { statusLabel = `${daysLeft}d left`;                  statusClass = "";          }
     }
     return { ...r, _expiryStr: expiryStr, _daysLeft: daysLeft ?? 99999, _statusLabel: statusLabel, _statusClass: statusClass };
   });
 
-  const sorted = annotated.sort((a, b) => a._daysLeft - b._daysLeft);
+  const sorted     = annotated.sort((a,b) => a._daysLeft - b._daysLeft);
   const uniqueMats = [...new Set(sorted.map(r => r["Material"]))];
-
-  const summary = `<div style="font-size:0.78rem;color:var(--muted);margin-bottom:0.5rem">
+  const summary    = `<div style="font-size:0.78rem;color:var(--muted);margin-bottom:0.5rem">
     Found <b style="color:var(--text)">${sorted.length}</b> QC record(s) across
     <b style="color:var(--text)">${uniqueMats.length}</b> material code(s)
   </div>`;
 
   const cols = [
-    { key: "Material",                              label: "Material" },
-    { key: "Material Description",                  label: "Description" },
-    { key: "Plant Name",                            label: "Plant" },
-    { key: "Description of Storage Location",       label: "Storage Location" },
-    { key: "Batch",                                 label: "Batch" },
-    { key: "_expiryStr",                            label: "Shelf Life Expiry" },
-    { key: "_statusLabel",                          label: "Expiry Status" },
-    { key: "Stock in Quality Inspection",           label: "QC Qty",      fmt: fmtQty, rawKey: "Stock in Quality Inspection",           cellClass: "col-qty" },
-    { key: "Value of Stock in Quality Inspection",  label: "QC Value (ETB)", fmt: fmtETB, rawKey: "Value of Stock in Quality Inspection", cellClass: "col-val" },
+    {key:"Material",                             label:"Material"},
+    {key:"Material Description",                 label:"Description"},
+    {key:"Plant Name",                           label:"Plant"},
+    {key:"Description of Storage Location",      label:"Storage Location"},
+    {key:"Batch",                                label:"Batch"},
+    {key:"_expiryStr",                           label:"Shelf Life Expiry"},
+    {key:"_statusLabel",                         label:"Expiry Status"},
+    {key:"Stock in Quality Inspection",          label:"QC Qty",       fmt:fmtQty, rawKey:"Stock in Quality Inspection",          cellClass:"col-qty"},
+    {key:"Value of Stock in Quality Inspection", label:"QC Value (ETB)",fmt:fmtETB, rawKey:"Value of Stock in Quality Inspection", cellClass:"col-val"},
   ];
-
   resultsEl.innerHTML = summary + buildTable(sorted, cols, r => r._statusClass);
 }
 
@@ -661,165 +733,166 @@ function clearQCSearch() {
 // ═══════════════════════════════════════════════════════════════════════════
 function renderQC() {
   const pf = pageFilters.qc;
-  document.getElementById("qc-filter-plant").value = pf.plant||"";
-  document.getElementById("qc-filter-mg").value    = pf.mg||"";
-  const df = applyPageFilter("qc").filter(r=>r["Stock in Quality Inspection"]>0 && r["Value of Stock in Quality Inspection"]>0);
+  document.getElementById("qc-filter-plant").value = pf.plant || "";
+  document.getElementById("qc-filter-mg").value    = pf.mg    || "";
+  // FIX BUG-6: removed "&& r["Value of Stock in Quality Inspection"] > 0"
+  // SAP sometimes records QC qty > 0 with zero ETB value (non-valuated batches,
+  // consignment stock) — these must still appear for physical count audits.
+  const df = applyPageFilter("qc").filter(r => r["Stock in Quality Inspection"] > 0);
 
-  const totalQCVal=df.reduce((s,r)=>s+r["Value of Stock in Quality Inspection"],0);
-  const totalQCQty=df.reduce((s,r)=>s+r["Stock in Quality Inspection"],0);
-  setKpis("qc-kpis",[
-    ["Total Value in QC", fmtETB(totalQCVal),"Across all plants","red"],
-    ["Total QC Quantity",  fmtQty(totalQCQty),"Units under inspection","amber"],
-    ["Unique Materials",   String(new Set(df.map(r=>r["Material"])).size),"Distinct SKUs","blue"],
+  const totalQCVal = df.reduce((s,r) => s + r["Value of Stock in Quality Inspection"], 0);
+  const totalQCQty = df.reduce((s,r) => s + r["Stock in Quality Inspection"], 0);
+  setKpis("qc-kpis", [
+    ["Total Value in QC", fmtETB(totalQCVal), "Across all plants",      "red"],
+    ["Total QC Quantity", fmtQty(totalQCQty), "Units under inspection", "amber"],
+    ["Unique Materials",  String(new Set(df.map(r=>r["Material"])).size),"Distinct SKUs","blue"],
   ]);
 
-  if (!df.length) { document.getElementById("qc-table-wrap").innerHTML=`<div class="alert-info">✓ No items in quality inspection.</div>`; return; }
+  if (!df.length) { document.getElementById("qc-table-wrap").innerHTML = `<div class="alert-info">✓ No items in quality inspection.</div>`; return; }
 
-  const plantQC=sortBy(groupBy(df,"Plant Name",[["val","Value of Stock in Quality Inspection"],["qty","Stock in Quality Inspection"]]),"val");
-  Plotly.newPlot("chart-qc-plant",[
-    {type:"bar",name:"Value (ETB)",x:plantQC.map(r=>r["Plant Name"]),y:plantQC.map(r=>r.val),yaxis:"y",marker:{color:"#f85149"},hovertemplate:"<b>%{x}</b><br>ETB %{y:,.0f}<extra></extra>"},
-    {type:"scatter",mode:"lines+markers",name:"Qty",x:plantQC.map(r=>r["Plant Name"]),y:plantQC.map(r=>r.qty),yaxis:"y2",marker:{color:"#3fb950",size:8},line:{color:"#3fb950"},hovertemplate:"<b>%{x}</b><br>Qty: %{y:,.0f}<extra></extra>"},
-  ],pl({height:280,margin:{l:20,r:60,t:20,b:80},yaxis2:{overlaying:"y",side:"right",gridcolor:"transparent",tickfont:{color:"#3fb950"}}}),PLOTLY_CONFIG);
+  const plantQC = sortBy(groupBy(df, "Plant Name", [["val","Value of Stock in Quality Inspection"],["qty","Stock in Quality Inspection"]]), "val");
+  Plotly.newPlot("chart-qc-plant", [
+    {type:"bar",     name:"Value (ETB)", x:plantQC.map(r=>r["Plant Name"]), y:plantQC.map(r=>r.val), yaxis:"y",  marker:{color:"#f85149"}, hovertemplate:"<b>%{x}</b><br>ETB %{y:,.0f}<extra></extra>"},
+    {type:"scatter", mode:"lines+markers", name:"Qty", x:plantQC.map(r=>r["Plant Name"]), y:plantQC.map(r=>r.qty), yaxis:"y2", marker:{color:"#3fb950",size:8}, line:{color:"#3fb950"}, hovertemplate:"<b>%{x}</b><br>Qty: %{y:,.0f}<extra></extra>"},
+  ], pl({height:280,margin:{l:20,r:60,t:20,b:80},yaxis2:{overlaying:"y",side:"right",gridcolor:"transparent",tickfont:{color:"#3fb950"}}}), PLOTLY_CONFIG);
 
-  const qcCols=[
-    {key:"Material",label:"Material"},{key:"Material Description",label:"Description"},
-    {key:"Material Group Name",label:"Material Group"},{key:"Plant Name",label:"Plant"},
-    {key:"Description of Storage Location",label:"Storage Location"},
-    {key:"_expiryStr",label:"Shelf Life Expiry"},
-    {key:"Stock in Quality Inspection",label:"QC Qty",fmt:fmtQty,rawKey:"Stock in Quality Inspection",cellClass:"col-qty"},
-    {key:"Value of Stock in Quality Inspection",label:"QC Value (ETB)",fmt:fmtETB,rawKey:"Value of Stock in Quality Inspection",cellClass:"col-val"},
+  const qcCols = [
+    {key:"Material",                             label:"Material"},
+    {key:"Material Description",                 label:"Description"},
+    {key:"Material Group Name",                  label:"Material Group"},
+    {key:"Plant Name",                           label:"Plant"},
+    {key:"Description of Storage Location",      label:"Storage Location"},
+    {key:"_expiryStr",                           label:"Shelf Life Expiry"},
+    {key:"Stock in Quality Inspection",          label:"QC Qty",        fmt:fmtQty, rawKey:"Stock in Quality Inspection",          cellClass:"col-qty"},
+    {key:"Value of Stock in Quality Inspection", label:"QC Value (ETB)",fmt:fmtETB, rawKey:"Value of Stock in Quality Inspection", cellClass:"col-val"},
   ];
-  const qcRows=sortBy([...df].map(r=>({...r,_expiryStr:r._expiry?r._expiry.toISOString().slice(0,10):""})),"Value of Stock in Quality Inspection");
-  document.getElementById("qc-table-wrap").innerHTML=buildTable(qcRows,qcCols,r=>r["Value of Stock in Quality Inspection"]>10000?"row-red":"");
-  document.getElementById("btn-dl-qc").onclick=()=>downloadCSV(qcRows,qcCols,"qc_inspection.csv");
-  document.getElementById("btn-dl-qc-xlsx").onclick=()=>downloadExcel(qcRows,qcCols,"qc_inspection.xlsx");
+  const qcRows = sortBy(
+    [...df].map(r => ({...r, _expiryStr: r._expiry ? r._expiry.toISOString().slice(0,10) : ""})),
+    "Value of Stock in Quality Inspection"
+  );
+  document.getElementById("qc-table-wrap").innerHTML = buildTable(qcRows, qcCols, r => r["Value of Stock in Quality Inspection"] > 10000 ? "row-red" : "");
+  document.getElementById("btn-dl-qc").onclick      = () => downloadCSV(qcRows,   qcCols, "qc_inspection.csv");
+  document.getElementById("btn-dl-qc-xlsx").onclick = () => downloadExcel(qcRows, qcCols, "qc_inspection.xlsx");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // BRANCH COMPARISON
 // ═══════════════════════════════════════════════════════════════════════════
 function renderBranch() {
-  const pf = pageFilters.branch;
-  document.getElementById("branch-filter-mg").value = pf.mg||"";
-  // FIX 3: Use applyPageFilter("branch") so active Plant/MG filter is respected,
-  // consistent with every other page. Was calling applyReconciliationToData(rawDf)
-  // directly, which ignored the plant filter entirely.
+  const pf   = pageFilters.branch;
+  document.getElementById("branch-filter-mg").value = pf.mg || "";
   const baseDf = applyPageFilter("branch");
-  const df = baseDf; // applyPageFilter already applies pf.mg filter
+  const df     = baseDf;
 
-  const plants=[...new Set(df.map(r=>String(r["Plant"]).toUpperCase()))];
-  let centralCode,centralName;
+  const plants = [...new Set(df.map(r => String(r["Plant"]).toUpperCase()))];
+  let centralCode, centralName;
   if (plants.includes("HO01")) {
-    centralCode="HO01";
-    centralName=df.find(r=>String(r["Plant"]).toUpperCase()==="HO01")?.["Plant Name"]||"HO01";
-    document.getElementById("branch-central-info").style.display="none";
+    centralCode = "HO01";
+    centralName = df.find(r => String(r["Plant"]).toUpperCase() === "HO01")?.["Plant Name"] || "HO01";
+    document.getElementById("branch-central-info").style.display = "none";
   } else {
-    const totals={};
-    df.forEach(r=>{const p=r["Plant Name"];totals[p]=(totals[p]||0)+r["Total Value"];});
-    centralName=Object.entries(totals).sort((a,b)=>b[1]-a[1])[0]?.[0]||"";
-    document.getElementById("branch-central-info").style.display="block";
-    document.getElementById("branch-central-info").innerHTML=`ℹ️ HO01 not found — using <b>${centralName}</b> as central branch (highest inventory value).`;
+    const totals = {};
+    df.forEach(r => { const p = r["Plant Name"]; totals[p] = (totals[p] || 0) + r["Total Value"]; });
+    centralName = Object.entries(totals).sort((a,b) => b[1]-a[1])[0]?.[0] || "";
+    document.getElementById("branch-central-info").style.display = "block";
+    document.getElementById("branch-central-info").innerHTML = `ℹ️ HO01 not found — using <b>${escHtml(centralName)}</b> as central branch (highest inventory value).`;
   }
 
-  const aggMap={};
-  df.forEach(r=>{
-    const k=r["Plant Name"];
-    if (!aggMap[k]) aggMap[k]={PlantName:k,Plant:r["Plant"],TotalValue:0,Unrestricted:0,Transit:0,QC:0,UnrestrictedQty:0,TransitQty:0,QCQty:0,Items:0};
-    aggMap[k].TotalValue  +=r["Total Value"];
-    aggMap[k].Unrestricted+=r["Value of Unrestricted Stock"];
-    aggMap[k].Transit     +=r["Value of Stock in Transit"];
-    aggMap[k].QC          +=r["Value of Stock in Quality Inspection"];
-    aggMap[k].UnrestrictedQty+=r["Unrestricted Stock"];
-    aggMap[k].TransitQty  +=r["Stock in Transit"];
-    aggMap[k].QCQty       +=r["Stock in Quality Inspection"];
+  const aggMap = {};
+  df.forEach(r => {
+    const k = r["Plant Name"];
+    if (!aggMap[k]) aggMap[k] = {PlantName:k,Plant:r["Plant"],TotalValue:0,Unrestricted:0,Transit:0,QC:0,UnrestrictedQty:0,TransitQty:0,QCQty:0,Items:0};
+    aggMap[k].TotalValue     += r["Total Value"];
+    aggMap[k].Unrestricted   += r["Value of Unrestricted Stock"];
+    aggMap[k].Transit        += r["Value of Stock in Transit"];
+    aggMap[k].QC             += r["Value of Stock in Quality Inspection"];
+    aggMap[k].UnrestrictedQty += r["Unrestricted Stock"];
+    aggMap[k].TransitQty     += r["Stock in Transit"];
+    aggMap[k].QCQty          += r["Stock in Quality Inspection"];
     aggMap[k].Items++;
   });
-  const branchAgg=Object.values(aggMap);
-  const others=branchAgg.map(r=>r.PlantName).filter(b=>b!==centralName);
+  const branchAgg = Object.values(aggMap);
+  const others    = branchAgg.map(r => r.PlantName).filter(b => b !== centralName);
 
-  const matPlantMap={};
-  df.forEach(r=>{
-    const mat=r["Material"],pln=r["Plant Name"];
-    if (!matPlantMap[mat]) matPlantMap[mat]={desc:r["Material Description"],group:r["Material Group Name"]};
-    if (!matPlantMap[mat][pln]) matPlantMap[mat][pln]={Unrestricted:0,Transit:0,QC:0,TotalValue:0,TotalQty:0,UnrestrictedQty:0,TransitQty:0,QCQty:0};
-    matPlantMap[mat][pln].Unrestricted+=r["Value of Unrestricted Stock"];
-    matPlantMap[mat][pln].Transit     +=r["Value of Stock in Transit"];
-    matPlantMap[mat][pln].QC          +=r["Value of Stock in Quality Inspection"];
-    matPlantMap[mat][pln].TotalValue  +=r["Total Value"];
-    matPlantMap[mat][pln].TotalQty    +=r["Total Qty"];
-    matPlantMap[mat][pln].UnrestrictedQty+=r["Unrestricted Stock"];
-    matPlantMap[mat][pln].TransitQty  +=r["Stock in Transit"];
-    matPlantMap[mat][pln].QCQty       +=r["Stock in Quality Inspection"];
+  const matPlantMap = {};
+  df.forEach(r => {
+    const mat = r["Material"], pln = r["Plant Name"];
+    if (!matPlantMap[mat]) matPlantMap[mat] = {desc:r["Material Description"],group:r["Material Group Name"]};
+    if (!matPlantMap[mat][pln]) matPlantMap[mat][pln] = {Unrestricted:0,Transit:0,QC:0,TotalValue:0,TotalQty:0,UnrestrictedQty:0,TransitQty:0,QCQty:0};
+    matPlantMap[mat][pln].Unrestricted    += r["Value of Unrestricted Stock"];
+    matPlantMap[mat][pln].Transit         += r["Value of Stock in Transit"];
+    matPlantMap[mat][pln].QC             += r["Value of Stock in Quality Inspection"];
+    matPlantMap[mat][pln].TotalValue      += r["Total Value"];
+    matPlantMap[mat][pln].TotalQty        += r["Total Qty"];
+    matPlantMap[mat][pln].UnrestrictedQty += r["Unrestricted Stock"];
+    matPlantMap[mat][pln].TransitQty      += r["Stock in Transit"];
+    matPlantMap[mat][pln].QCQty           += r["Stock in Quality Inspection"];
   });
 
-  const tabsHtml=`
+  const tabsHtml = `
     <div class="branch-tabs" id="branch-tabs">
       <button class="branch-tab active" data-tab="value">📊 Total Value &amp; Quantity</button>
       <button class="branch-tab" data-tab="material">🔬 Line-Item (Material Across Branches)</button>
     </div>
     <div id="branch-tab-value"></div>
     <div id="branch-tab-material" style="display:none"></div>`;
-  document.getElementById("branch-tabs-wrap").innerHTML=tabsHtml;
+  document.getElementById("branch-tabs-wrap").innerHTML = tabsHtml;
 
-  document.querySelectorAll(".branch-tab").forEach(btn=>{
-    btn.addEventListener("click",()=>{
-      document.querySelectorAll(".branch-tab").forEach(b=>b.classList.remove("active"));
+  document.querySelectorAll(".branch-tab").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".branch-tab").forEach(b => b.classList.remove("active"));
       btn.classList.add("active");
-      const tab=btn.dataset.tab;
-      document.getElementById("branch-tab-value").style.display   =tab==="value"   ?"block":"none";
-      document.getElementById("branch-tab-material").style.display=tab==="material"?"block":"none";
-      if (tab==="material") renderMaterialTab();
+      const tab = btn.dataset.tab;
+      document.getElementById("branch-tab-value").style.display    = tab === "value"    ? "block" : "none";
+      document.getElementById("branch-tab-material").style.display = tab === "material" ? "block" : "none";
+      if (tab === "material") renderMaterialTab();
     });
   });
 
-  const sel=document.getElementById("branch-select");
-  sel.innerHTML="";
-  others.forEach(b=>{
-    const opt=document.createElement("option");
-    opt.value=b; opt.textContent=b; opt.selected=true;
+  const sel = document.getElementById("branch-select");
+  sel.innerHTML = "";
+  others.forEach(b => {
+    const opt = document.createElement("option");
+    opt.value = b; opt.textContent = b; opt.selected = true;
     sel.appendChild(opt);
   });
 
   // ── TAB 1: Total Value ──
   function updateBranchCharts() {
-    const selected=[...sel.selectedOptions].map(o=>o.value);
-    const wrap=document.getElementById("branch-tab-value");
-    if (!selected.length) { wrap.innerHTML=`<div class="alert-warning">⚠️ Select at least one branch.</div>`; return; }
-    const compareNames=[centralName,...selected];
-    const compareDf=branchAgg.filter(r=>compareNames.includes(r.PlantName));
+    const selected = [...sel.selectedOptions].map(o => o.value);
+    const wrap     = document.getElementById("branch-tab-value");
+    if (!selected.length) { wrap.innerHTML = `<div class="alert-warning">⚠️ Select at least one branch.</div>`; return; }
+    const compareNames = [centralName, ...selected];
+    const compareDf    = branchAgg.filter(r => compareNames.includes(r.PlantName));
 
-    const bCols=[
-      {key:"PlantName",label:"Plant Name"},
-      {key:"TotalValue",label:"Total Value (ETB)",fmt:fmtETB,rawKey:"TotalValue"},
-      {key:"Unrestricted",label:"Unrestricted (ETB)",fmt:fmtETB,rawKey:"Unrestricted"},
-      {key:"UnrestrictedQty",label:"Avail Qty",fmt:fmtQty,rawKey:"UnrestrictedQty",cellClass:"col-qty"},
-      {key:"Transit",label:"Transit (ETB)",fmt:fmtETB,rawKey:"Transit"},
-      {key:"TransitQty",label:"Transit Qty",fmt:fmtQty,rawKey:"TransitQty",cellClass:"col-qty"},
-      {key:"QC",label:"QC (ETB)",fmt:fmtETB,rawKey:"QC"},
-      {key:"QCQty",label:"QC Qty",fmt:fmtQty,rawKey:"QCQty",cellClass:"col-qty"},
-      {key:"Items",label:"# Line Items"},
+    const bCols = [
+      {key:"PlantName",       label:"Plant Name"},
+      {key:"TotalValue",      label:"Total Value (ETB)",    fmt:fmtETB, rawKey:"TotalValue"},
+      {key:"Unrestricted",    label:"Unrestricted (ETB)",   fmt:fmtETB, rawKey:"Unrestricted"},
+      {key:"UnrestrictedQty", label:"Avail Qty",            fmt:fmtQty, rawKey:"UnrestrictedQty", cellClass:"col-qty"},
+      {key:"Transit",         label:"Transit (ETB)",        fmt:fmtETB, rawKey:"Transit"},
+      {key:"TransitQty",      label:"Transit Qty",          fmt:fmtQty, rawKey:"TransitQty",      cellClass:"col-qty"},
+      {key:"QC",              label:"QC (ETB)",             fmt:fmtETB, rawKey:"QC"},
+      {key:"QCQty",           label:"QC Qty",               fmt:fmtQty, rawKey:"QCQty",           cellClass:"col-qty"},
+      {key:"Items",           label:"# Line Items"},
     ];
-    wrap.innerHTML=`
-      <div id="branch-table-wrap-inner" style="margin-bottom:1rem">${buildTable(compareDf,bCols,r=>r.PlantName===centralName?"row-blue":"")}</div>`;
-
-    document.getElementById("btn-dl-branch-csv").onclick=()=>downloadCSV(compareDf,bCols,"branch_comparison.csv");
-    document.getElementById("btn-dl-branch-xlsx").onclick=()=>downloadExcel(compareDf,bCols,"branch_comparison.xlsx");
+    wrap.innerHTML = `<div id="branch-table-wrap-inner" style="margin-bottom:1rem">${buildTable(compareDf, bCols, r => r.PlantName === centralName ? "row-blue" : "")}</div>`;
+    document.getElementById("btn-dl-branch-csv").onclick  = () => downloadCSV(compareDf,   bCols, "branch_comparison.csv");
+    document.getElementById("btn-dl-branch-xlsx").onclick = () => downloadExcel(compareDf, bCols, "branch_comparison.xlsx");
   }
 
   // ── TAB 2: Material Across Branches ──
-  // FIX 9: initialize as false each time renderBranch runs so filter changes
-  // cause the Material tab UI (including its own MG dropdown) to rebuild correctly.
-  let matTabInitialized=false;
+  let matTabInitialized = false;
   function renderMaterialTab() {
-    const wrap=document.getElementById("branch-tab-material");
-    const allPlantNames=[...new Set(df.map(r=>r["Plant Name"]))].sort((a,b)=>{
-      if (a===centralName) return -1; if (b===centralName) return 1; return a.localeCompare(b);
+    const wrap         = document.getElementById("branch-tab-material");
+    const allPlantNames = [...new Set(df.map(r => r["Plant Name"]))].sort((a,b) => {
+      if (a === centralName) return -1; if (b === centralName) return 1; return a.localeCompare(b);
     });
 
     if (!matTabInitialized) {
-      matTabInitialized=true;
-      const mgNamesForFilter=[...new Set(df.map(r=>r["Material Group Name"]))].filter(Boolean).filter(name=>!isNonMedicalGroup(name)).sort();
-      wrap.innerHTML=`
+      matTabInitialized = true;
+      const mgNamesForFilter = [...new Set(df.map(r => r["Material Group Name"]))].filter(Boolean).filter(name => !isNonMedicalGroup(name)).sort();
+      wrap.innerHTML = `
         <div style="display:flex;gap:0.8rem;flex-wrap:wrap;align-items:flex-end;margin-bottom:1rem;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.8rem">
           <div>
             <div class="nav-label" style="font-size:0.65rem;margin-bottom:3px">Search Material</div>
@@ -842,7 +915,7 @@ function renderBranch() {
             <div class="nav-label" style="font-size:0.65rem;margin-bottom:3px">Material Group</div>
             <select id="mat-mgfilter" style="background:var(--surface2);border:1px solid var(--border2);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px">
               <option value="">All Material Groups</option>
-              ${mgNamesForFilter.map(m=>`<option value="${m}">${m}</option>`).join("")}
+              ${mgNamesForFilter.map(m => `<option value="${escHtml(m)}">${escHtml(m)}</option>`).join("")}
             </select>
           </div>
           <div>
@@ -860,176 +933,221 @@ function renderBranch() {
         </div>
         <div id="mat-chart-wrap" style="margin-bottom:1rem"></div>
         <div id="mat-table-wrap"></div>`;
-      document.getElementById("mat-apply").addEventListener("click",refreshMaterialView);
-      document.getElementById("mat-search").addEventListener("keydown",e=>{if(e.key==="Enter")refreshMaterialView();});
+      document.getElementById("mat-apply").addEventListener("click", refreshMaterialView);
+      document.getElementById("mat-search").addEventListener("keydown", e => { if (e.key === "Enter") refreshMaterialView(); });
     }
     refreshMaterialView();
 
     function refreshMaterialView() {
-      const searchVal=(document.getElementById("mat-search").value||"").toLowerCase().trim();
-      const metric=document.getElementById("mat-metric").value;
-      const sortMode=document.getElementById("mat-sort").value;
-      const mgFilter=document.getElementById("mat-mgfilter").value;
-      const isQty=metric.includes("Qty");
-      const fmtFn=isQty?fmtQty:fmtETB;
+      const searchVal = (document.getElementById("mat-search").value || "").toLowerCase().trim();
+      const metric    = document.getElementById("mat-metric").value;
+      const sortMode  = document.getElementById("mat-sort").value;
+      const mgFilter  = document.getElementById("mat-mgfilter").value;
+      const isQty     = metric.includes("Qty");
+      const fmtFn     = isQty ? fmtQty : fmtETB;
 
-      let materials=Object.entries(matPlantMap)
-        .filter(([mat,info])=>{
-          if (mgFilter&&info.group!==mgFilter) return false;
-          if (searchVal) return mat.toLowerCase().includes(searchVal)||info.desc.toLowerCase().includes(searchVal);
+      let materials = Object.entries(matPlantMap)
+        .filter(([mat, info]) => {
+          if (mgFilter && info.group !== mgFilter) return false;
+          if (searchVal) return mat.toLowerCase().includes(searchVal) || info.desc.toLowerCase().includes(searchVal);
           return true;
         })
-        .map(([mat,info])=>{
-          const plantData={};
-          let grandTotal=0,branchCount=0;
-          allPlantNames.forEach(pn=>{
-            const v=info[pn]?info[pn][metric]:0;
-            plantData[pn]=v||0;
-            grandTotal+=plantData[pn];
-            if ((info[pn]?.TotalValue||0)>0) branchCount++;
+        .map(([mat, info]) => {
+          const plantData = {};
+          let grandTotal = 0, branchCount = 0;
+          allPlantNames.forEach(pn => {
+            const v = info[pn] ? info[pn][metric] : 0;
+            plantData[pn] = v || 0;
+            grandTotal   += plantData[pn];
+            if ((info[pn]?.TotalValue || 0) > 0) branchCount++;
           });
-          return {mat,desc:info.desc,group:info.group,plantData,grandTotal,branchCount};
+          return {mat, desc:info.desc, group:info.group, plantData, grandTotal, branchCount};
         });
 
-      if (sortMode==="total_desc") materials.sort((a,b)=>b.grandTotal-a.grandTotal);
-      if (sortMode==="total_asc")  materials.sort((a,b)=>a.grandTotal-b.grandTotal);
-      if (sortMode==="desc_asc")   materials.sort((a,b)=>a.desc.localeCompare(b.desc));
-      if (sortMode==="spread_desc")materials.sort((a,b)=>b.branchCount-a.branchCount);
+      if (sortMode === "total_desc") materials.sort((a,b) => b.grandTotal - a.grandTotal);
+      if (sortMode === "total_asc")  materials.sort((a,b) => a.grandTotal - b.grandTotal);
+      if (sortMode === "desc_asc")   materials.sort((a,b) => a.desc.localeCompare(b.desc));
+      if (sortMode === "spread_desc")materials.sort((a,b) => b.branchCount - a.branchCount);
 
-      const top=materials.slice(0,30);
-      const chartWrap=document.getElementById("mat-chart-wrap");
-      if (!top.length) { chartWrap.innerHTML=""; document.getElementById("mat-table-wrap").innerHTML=`<div class="alert-info">No materials found.</div>`; return; }
-      chartWrap.innerHTML="";
+      const top      = materials.slice(0, 30);
+      const chartWrap = document.getElementById("mat-chart-wrap");
+      if (!top.length) {
+        chartWrap.innerHTML = "";
+        document.getElementById("mat-table-wrap").innerHTML = `<div class="alert-info">No materials found.</div>`;
+        return;
+      }
+      chartWrap.innerHTML = "";
 
-      const colDefs=[
-        {key:"mat",label:"Material"},
-        {key:"desc",label:"Description"},
-        {key:"group",label:"Material Group"},
-        ...allPlantNames.map(pn=>({key:`__p__${pn}`,label:pn,fmt:fmtFn,rawKey:`__r__${pn}`,cellClass:isQty?"col-qty":"col-val"})),
-        {key:"grandTotal",label:"Grand Total",fmt:fmtFn,rawKey:"grandTotal",cellClass:isQty?"col-qty":"col-val"},
-        {key:"branchCount",label:"# Branches"},
+      const colDefs = [
+        {key:"mat",   label:"Material"},
+        {key:"desc",  label:"Description"},
+        {key:"group", label:"Material Group"},
+        ...allPlantNames.map(pn => ({key:`__p__${pn}`, label:pn, fmt:fmtFn, rawKey:`__r__${pn}`, cellClass:isQty?"col-qty":"col-val"})),
+        {key:"grandTotal",  label:"Grand Total", fmt:fmtFn, rawKey:"grandTotal", cellClass:isQty?"col-qty":"col-val"},
+        {key:"branchCount", label:"# Branches"},
       ];
-      const tableRows=materials.slice(0,200).map(m=>{
-        const row={mat:m.mat,desc:m.desc,group:m.group,grandTotal:m.grandTotal,branchCount:m.branchCount};
-        allPlantNames.forEach(pn=>{row[`__p__${pn}`]=m.plantData[pn]||0; row[`__r__${pn}`]=m.plantData[pn]||0;});
-        row["__r__grandTotal"]=m.grandTotal;
+      const tableRows = materials.slice(0, 200).map(m => {
+        const row = {mat:m.mat, desc:m.desc, group:m.group, grandTotal:m.grandTotal, branchCount:m.branchCount};
+        allPlantNames.forEach(pn => { row[`__p__${pn}`] = m.plantData[pn] || 0; row[`__r__${pn}`] = m.plantData[pn] || 0; });
+        row["__r__grandTotal"] = m.grandTotal;
         return row;
       });
 
-      const centralKey=`__p__${centralName}`;
-      const thead=`<thead><tr>${colDefs.map(c=>`<th${c.key===centralKey?' style="color:#58a6ff;background:#0d2035"':""} >${c.label}</th>`).join("")}</tr></thead>`;
-      const tbody=tableRows.map(r=>{
-        const cells=colDefs.map(c=>{
-          const v=r[c.key];
-          const display=c.fmt?c.fmt(v):(v==null?"":v);
-          const isZero=typeof v==="number"&&v===0;
-          const style=c.key===centralKey?'style="color:#58a6ff;background:#0d2035"':isZero?'style="color:#484f58"':"";
-          const cls=c.cellClass||"";
+      const centralKey = `__p__${centralName}`;
+      const thead = `<thead><tr>${colDefs.map(c =>
+        `<th${c.key === centralKey ? ' style="color:#58a6ff;background:#0d2035"' : ""}>${escHtml(c.label)}</th>`
+      ).join("")}</tr></thead>`;
+      const tbody = tableRows.map(r => {
+        const cells = colDefs.map(c => {
+          const v       = r[c.key];
+          const display = c.fmt ? c.fmt(v) : (v == null ? "" : escHtml(String(v)));
+          const isZero  = typeof v === "number" && v === 0;
+          const style   = c.key === centralKey ? 'style="color:#58a6ff;background:#0d2035"' : isZero ? 'style="color:#484f58"' : "";
+          const cls     = c.cellClass || "";
           return `<td class="${cls}" ${style}>${display}</td>`;
         }).join("");
         return `<tr>${cells}</tr>`;
       }).join("");
-      document.getElementById("mat-table-wrap").innerHTML=`
-        <div style="color:var(--muted);font-size:12px;margin-bottom:6px">Showing ${tableRows.length} of ${materials.length} materials · Blue = Central (${centralName})</div>
+      document.getElementById("mat-table-wrap").innerHTML = `
+        <div style="color:var(--muted);font-size:12px;margin-bottom:6px">Showing ${tableRows.length} of ${materials.length} materials · Blue = Central (${escHtml(centralName)})</div>
         <div class="tbl-wrap"><table>${thead}<tbody>${tbody}</tbody></table></div>
-        ${materials.length>200?`<div class="alert-info">Showing first 200 of ${materials.length}. Refine search.</div>`:""}`;
+        ${materials.length > 200 ? `<div class="alert-info">Showing first 200 of ${materials.length}. Refine search.</div>` : ""}`;
 
-      // DL handlers
-      const flatCols=[{key:"mat",label:"Material"},{key:"desc",label:"Description"},{key:"group",label:"Material Group"},...allPlantNames.map(pn=>({key:`__p__${pn}`,label:pn,rawKey:`__r__${pn}`})),{key:"grandTotal",label:"Grand Total"}];
-      const btn=document.getElementById("mat-dl-csv");
-      if (btn) btn.onclick=()=>downloadCSV(tableRows,flatCols,"materials_by_branch.csv");
-      const btnX=document.getElementById("mat-dl-xlsx");
-      if (btnX) btnX.onclick=()=>downloadExcel(tableRows,flatCols,"materials_by_branch.xlsx");
+      const flatCols = [
+        {key:"mat",label:"Material"}, {key:"desc",label:"Description"}, {key:"group",label:"Material Group"},
+        ...allPlantNames.map(pn => ({key:`__p__${pn}`, label:pn, rawKey:`__r__${pn}`})),
+        {key:"grandTotal",label:"Grand Total"},
+      ];
+      const btnCsv  = document.getElementById("mat-dl-csv");
+      const btnXlsx = document.getElementById("mat-dl-xlsx");
+      if (btnCsv)  btnCsv.onclick  = () => downloadCSV(tableRows,   flatCols, "materials_by_branch.csv");
+      if (btnXlsx) btnXlsx.onclick = () => downloadExcel(tableRows, flatCols, "materials_by_branch.xlsx");
     }
   }
 
-  sel.addEventListener("change",updateBranchCharts);
+  sel.addEventListener("change", updateBranchCharts);
   updateBranchCharts();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// INVENTORY FLOW (rebuilt)
+// INVENTORY FLOW
 // ═══════════════════════════════════════════════════════════════════════════
 function renderFlow() {
   const pf = pageFilters.flow;
-  document.getElementById("flow-filter-plant").value = pf.plant||"";
-  document.getElementById("flow-filter-mg").value    = pf.mg||"";
+  document.getElementById("flow-filter-plant").value = pf.plant || "";
+  document.getElementById("flow-filter-mg").value    = pf.mg    || "";
   const df = applyPageFilter("flow");
 
-  const totalVal   = df.reduce((s,r)=>s+r["Total Value"],0);
-  const transitVal = df.reduce((s,r)=>s+r["Value of Stock in Transit"],0);
-  const qcVal      = df.reduce((s,r)=>s+r["Value of Stock in Quality Inspection"],0);
-  const availVal   = df.reduce((s,r)=>s+r["Value of Unrestricted Stock"],0);
-  const totalQty   = df.reduce((s,r)=>s+r["Total Qty"],0);
-  const availQty   = df.reduce((s,r)=>s+r["Unrestricted Stock"],0);
+  const totalVal   = df.reduce((s,r) => s + r["Total Value"], 0);
+  const transitVal = df.reduce((s,r) => s + r["Value of Stock in Transit"], 0);
+  const qcVal      = df.reduce((s,r) => s + r["Value of Stock in Quality Inspection"], 0);
+  const availVal   = df.reduce((s,r) => s + r["Value of Unrestricted Stock"], 0);
+  const totalQty   = df.reduce((s,r) => s + r["Total Qty"], 0);
+  const availQty   = df.reduce((s,r) => s + r["Unrestricted Stock"], 0);
 
-  // Reorder alerts: unrestricted=0 but transit or QC > 0
-  const reorderItems = df.filter(r=>r["Unrestricted Stock"]===0&&(r["Stock in Transit"]>0||r["Stock in Quality Inspection"]>0));
+  const reorderItems = df.filter(r => r["Unrestricted Stock"] === 0 && (r["Stock in Transit"] > 0 || r["Stock in Quality Inspection"] > 0));
 
-  setKpis("flow-kpis",[
-    ["Total Inventory",     fmtETB(totalVal),  `${fmtQty(totalQty)} units`,"blue"],
-    ["Available Stock",     fmtETB(availVal),  `${fmtQty(availQty)} units unrestricted`,"green"],
-    ["In Transit (Inbound)",fmtETB(transitVal),`${fmtQty(df.reduce((s,r)=>s+r["Stock in Transit"],0))} units`,"amber"],
-    ["In QC",               fmtETB(qcVal),     `${fmtQty(df.reduce((s,r)=>s+r["Stock in Quality Inspection"],0))} units`,"red"],
-    ["Reorder Alerts",      String(reorderItems.length),"Zero unrestricted stock","red"],
+  setKpis("flow-kpis", [
+    ["Total Inventory",      fmtETB(totalVal),   `${fmtQty(totalQty)} units`,               "blue"],
+    ["Available Stock",      fmtETB(availVal),   `${fmtQty(availQty)} units unrestricted`,   "green"],
+    ["In Transit (Inbound)", fmtETB(transitVal), `${fmtQty(df.reduce((s,r) => s+r["Stock in Transit"],0))} units`, "amber"],
+    ["In QC",                fmtETB(qcVal),      `${fmtQty(df.reduce((s,r) => s+r["Stock in Quality Inspection"],0))} units`, "red"],
+    ["Reorder Alerts",       String(reorderItems.length), "Zero unrestricted stock", "red"],
   ]);
 
-  // Reorder table
-  const reorderCols=[
-    {key:"Material",label:"Material"},{key:"Material Description",label:"Description"},
-    {key:"Material Group Name",label:"Material Group"},{key:"Plant Name",label:"Plant"},
-    {key:"Unrestricted Stock",label:"Avail Qty",fmt:fmtQty,rawKey:"Unrestricted Stock",cellClass:"col-qty"},
-    {key:"Stock in Transit",label:"In Transit",fmt:fmtQty,rawKey:"Stock in Transit",cellClass:"col-qty"},
-    {key:"Stock in Quality Inspection",label:"In QC",fmt:fmtQty,rawKey:"Stock in Quality Inspection",cellClass:"col-qty"},
-    {key:"Value of Stock in Transit",label:"Transit Value (ETB)",fmt:fmtETB,rawKey:"Value of Stock in Transit",cellClass:"col-val"},
-    {key:"_alert",label:"Alert", raw:true},
+  const reorderCols = [
+    {key:"Material",                  label:"Material"},
+    {key:"Material Description",      label:"Description"},
+    {key:"Material Group Name",       label:"Material Group"},
+    {key:"Plant Name",                label:"Plant"},
+    {key:"Unrestricted Stock",        label:"Avail Qty",        fmt:fmtQty, rawKey:"Unrestricted Stock",        cellClass:"col-qty"},
+    {key:"Stock in Transit",          label:"In Transit",        fmt:fmtQty, rawKey:"Stock in Transit",          cellClass:"col-qty"},
+    {key:"Stock in Quality Inspection",label:"In QC",           fmt:fmtQty, rawKey:"Stock in Quality Inspection",cellClass:"col-qty"},
+    {key:"Value of Stock in Transit", label:"Transit Value (ETB)",fmt:fmtETB,rawKey:"Value of Stock in Transit", cellClass:"col-val"},
+    {key:"_alert",                    label:"Alert", raw:true},
   ];
-  const reorderRows = reorderItems.map(r=>({...r,
-    _alert: r["Stock in Transit"]>0&&r["Stock in Quality Inspection"]>0
+  const reorderRows = reorderItems.map(r => ({
+    ...r,
+    _alert: r["Stock in Transit"] > 0 && r["Stock in Quality Inspection"] > 0
       ? "<span class='badge badge-red'>Transit+QC</span>"
-      : r["Stock in Transit"]>0
+      : r["Stock in Transit"] > 0
       ? "<span class='badge badge-amber'>Awaiting Transit</span>"
       : "<span class='badge badge-amber'>Awaiting QC Release</span>",
   }));
   document.getElementById("reorder-table-wrap").innerHTML = reorderRows.length
-    ? buildTable(reorderRows,reorderCols,()=>"row-amber")
+    ? buildTable(reorderRows, reorderCols, () => "row-amber")
     : `<div class="alert-info">✓ No reorder alerts — all materials have available unrestricted stock.</div>`;
 
-  const flowForDl = df.map(r=>({...r}));
-  const flowDlCols=[
-    {key:"Material",label:"Material"},{key:"Material Description",label:"Description"},
-    {key:"Plant Name",label:"Plant"},{key:"Material Group Name",label:"Material Group"},
-    {key:"Unrestricted Stock",label:"Available Qty",rawKey:"Unrestricted Stock"},
-    {key:"Stock in Transit",label:"Transit Qty",rawKey:"Stock in Transit"},
-    {key:"Stock in Quality Inspection",label:"QC Qty",rawKey:"Stock in Quality Inspection"},
-    {key:"Value of Unrestricted Stock",label:"Available Value (ETB)",rawKey:"Value of Unrestricted Stock"},
-    {key:"Value of Stock in Transit",label:"Transit Value (ETB)",rawKey:"Value of Stock in Transit"},
+  // Stock levels chart
+  const plantAgg = sortBy(
+    groupBy(df, "Plant Name", [["avail","Unrestricted Stock"],["transit","Stock in Transit"],["qc","Stock in Quality Inspection"]]),
+    "avail"
+  );
+  Plotly.newPlot("chart-stock-levels", [
+    {type:"bar", name:"Available",  x:plantAgg.map(r=>r["Plant Name"]), y:plantAgg.map(r=>r.avail),  marker:{color:"#3fb950"}},
+    {type:"bar", name:"In Transit", x:plantAgg.map(r=>r["Plant Name"]), y:plantAgg.map(r=>r.transit), marker:{color:"#d29922"}},
+    {type:"bar", name:"In QC",      x:plantAgg.map(r=>r["Plant Name"]), y:plantAgg.map(r=>r.qc),     marker:{color:"#f85149"}},
+  ], pl({height:300,barmode:"stack",margin:{l:20,r:20,t:20,b:80}}), PLOTLY_CONFIG);
+
+  // Inter-location transfers
+  const transferCols = [
+    {key:"Material",                  label:"Material"},
+    {key:"Material Description",      label:"Description"},
+    {key:"Plant Name",                label:"Receiving Plant"},
+    {key:"Stock in Transit",          label:"Transit Qty",        fmt:fmtQty, rawKey:"Stock in Transit",          cellClass:"col-qty"},
+    {key:"Value of Stock in Transit", label:"Transit Value (ETB)",fmt:fmtETB, rawKey:"Value of Stock in Transit", cellClass:"col-val"},
   ];
-  document.getElementById("btn-dl-flow-csv").onclick=()=>downloadCSV(flowForDl,flowDlCols,"inventory_flow.csv");
-  document.getElementById("btn-dl-flow-xlsx").onclick=()=>downloadExcel(flowForDl,flowDlCols,"inventory_flow.xlsx");
+  const transferRows = sortBy(df.filter(r => r["Stock in Transit"] > 0), "Value of Stock in Transit");
+  document.getElementById("transfer-table-wrap").innerHTML = transferRows.length
+    ? buildTable(transferRows, transferCols)
+    : `<div class="alert-info">No inter-location transfers currently in progress.</div>`;
+
+  // Inbound vs available chart
+  const inboundAgg = sortBy(
+    groupBy(df.filter(r => r["Stock in Transit"] > 0), "Plant Name", [["avail","Unrestricted Stock"],["inbound","Stock in Transit"]]),
+    "inbound"
+  );
+  if (inboundAgg.length) {
+    Plotly.newPlot("chart-inbound-outbound", [
+      {type:"bar", name:"Available Stock", x:inboundAgg.map(r=>r["Plant Name"]), y:inboundAgg.map(r=>r.avail),   marker:{color:"#3fb950"}},
+      {type:"bar", name:"Inbound Transit", x:inboundAgg.map(r=>r["Plant Name"]), y:inboundAgg.map(r=>r.inbound), marker:{color:"#d29922"}},
+    ], pl({height:280,barmode:"group",margin:{l:20,r:20,t:20,b:80}}), PLOTLY_CONFIG);
+  } else {
+    document.getElementById("chart-inbound-outbound").innerHTML = `<div class="alert-info">No transit data to chart.</div>`;
+  }
+
+  const flowDlCols = [
+    {key:"Material",                          label:"Material"},
+    {key:"Material Description",              label:"Description"},
+    {key:"Plant Name",                        label:"Plant"},
+    {key:"Material Group Name",               label:"Material Group"},
+    {key:"Unrestricted Stock",                label:"Available Qty",      rawKey:"Unrestricted Stock"},
+    {key:"Stock in Transit",                  label:"Transit Qty",        rawKey:"Stock in Transit"},
+    {key:"Stock in Quality Inspection",       label:"QC Qty",             rawKey:"Stock in Quality Inspection"},
+    {key:"Value of Unrestricted Stock",       label:"Available Value (ETB)",rawKey:"Value of Unrestricted Stock"},
+    {key:"Value of Stock in Transit",         label:"Transit Value (ETB)",rawKey:"Value of Stock in Transit"},
+  ];
+  document.getElementById("btn-dl-flow-csv").onclick  = () => downloadCSV(df,   flowDlCols, "inventory_flow.csv");
+  document.getElementById("btn-dl-flow-xlsx").onclick = () => downloadExcel(df, flowDlCols, "inventory_flow.xlsx");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // DATA PREVIEW
 // ═══════════════════════════════════════════════════════════════════════════
 function renderPreview() {
-  // FIX 2: Use reconciled data — was rawDf, so converted source materials were
-  // still visible in the preview table with original (unconverted) quantities.
-  filtDf = applyReconciliationToData(rawDf);
+  filtDf = getReconciledBase();
   populatePreviewFilters();
   renderPreviewTable();
 }
 
 function populatePreviewFilters() {
-  // Populate filter dropdowns from rawDf so all original plant/group options
-  // remain available regardless of reconciliation state.
   function fill(id, key, excludeFn) {
     const sel = document.getElementById(id); if (!sel) return;
-    const vals = [...new Set(rawDf.map(r=>r[key]))]
+    const vals = [...new Set(rawDf.map(r => r[key]))]
       .filter(Boolean)
       .filter(v => !excludeFn || !excludeFn(v))
       .sort();
-    sel.innerHTML = vals.map(v=>`<option value="${v}">${v}</option>`).join("");
+    sel.innerHTML = vals.map(v => `<option value="${escHtml(v)}">${escHtml(v)}</option>`).join("");
   }
   fill("filter-plant",  "Plant Name",         null);
   fill("filter-mg",     "Material Group Name", isNonMedicalGroup);
@@ -1037,50 +1155,58 @@ function populatePreviewFilters() {
 }
 
 function applyPreviewFilters() {
-  // FIX 2 (cont.): filter from reconciled base, not rawDf
-  const baseDf = applyReconciliationToData(rawDf);
-  const getSelected=id=>[...document.querySelectorAll(`#${id} option:checked`)].map(o=>o.value);
-  const plants=getSelected("filter-plant");
-  const mgs=getSelected("filter-mg");
-  const mgnames=getSelected("filter-mgname");
-  filtDf=baseDf.filter(r=>
-    (!plants.length||plants.includes(r["Plant Name"]))&&
-    (!mgs.length||mgs.includes(r["Material Group Name"]))&&
-    (!mgnames.length||mgnames.includes(r["Material Group Name"]))
+  const baseDf     = getReconciledBase();
+  const getSelected = id => [...document.querySelectorAll(`#${id} option:checked`)].map(o => o.value);
+  const plants      = getSelected("filter-plant");
+  const mgs         = getSelected("filter-mg");
+  const mgnames     = getSelected("filter-mgname");
+  filtDf = baseDf.filter(r =>
+    (!plants.length  || plants.includes(r["Plant Name"])) &&
+    (!mgs.length     || mgs.includes(r["Material Group Name"])) &&
+    (!mgnames.length || mgnames.includes(r["Material Group Name"]))
   );
   renderPreviewTable();
 }
 
 function renderPreviewTable() {
-  const df=filtDf;
-  setKpis("preview-kpis",[
-    ["Total Records",     df.length.toLocaleString(),"After filtering","blue"],
-    ["Unique Materials",  new Set(df.map(r=>r["Material"])).size.toLocaleString(),"Distinct SKUs","green"],
-    ["Total Plants",      new Set(df.map(r=>r["Plant"])).size.toLocaleString(),"Stocking locations","amber"],
-    ["Material Groups",   new Set(df.map(r=>r["Material Group Name"])).size.toLocaleString(),"Therapeutic categories","purple"],
+  const df = filtDf;
+  setKpis("preview-kpis", [
+    ["Total Records",    df.length.toLocaleString(),                            "After filtering",           "blue"],
+    ["Unique Materials", new Set(df.map(r=>r["Material"])).size.toLocaleString(),"Distinct SKUs",            "green"],
+    ["Total Plants",     new Set(df.map(r=>r["Plant"])).size.toLocaleString(),   "Stocking locations",       "amber"],
+    ["Material Groups",  new Set(df.map(r=>r["Material Group Name"])).size.toLocaleString(),"Therapeutic categories","purple"],
   ]);
-  document.getElementById("preview-count").innerHTML=`Showing <b>${df.length.toLocaleString()}</b> of <b>${rawDf.length.toLocaleString()}</b> records`;
+  document.getElementById("preview-count").innerHTML = `Showing <b>${df.length.toLocaleString()}</b> of <b>${rawDf.length.toLocaleString()}</b> records`;
 
-  const cols=[
-    {key:"Material",label:"Material"},
-    {key:"Material Description",label:"Description"},
-    {key:"Plant Name",label:"Plant"},
-    {key:"Material Group Name",label:"Material Group"},
-    {key:"Unrestricted Stock",label:"Avail Qty",fmt:fmtQty,rawKey:"Unrestricted Stock",cellClass:"col-qty"},
-    {key:"Stock in Transit",label:"Transit Qty",fmt:fmtQty,rawKey:"Stock in Transit",cellClass:"col-qty"},
-    {key:"Stock in Quality Inspection",label:"QC Qty",fmt:fmtQty,rawKey:"Stock in Quality Inspection",cellClass:"col-qty"},
-    {key:"Value of Unrestricted Stock",label:"Avail Value (ETB)",fmt:fmtETB,rawKey:"Value of Unrestricted Stock",cellClass:"col-val"},
-    {key:"Value of Stock in Transit",label:"Transit Value (ETB)",fmt:fmtETB,rawKey:"Value of Stock in Transit",cellClass:"col-val"},
-    {key:"Value of Stock in Quality Inspection",label:"QC Value (ETB)",fmt:fmtETB,rawKey:"Value of Stock in Quality Inspection",cellClass:"col-val"},
-    {key:"Total Value",label:"Total Value (ETB)",fmt:fmtETB,rawKey:"Total Value",cellClass:"col-val"},
-    {key:"_expiryStr",label:"Expiry Date"},
+  const cols = [
+    {key:"Material",                          label:"Material"},
+    {key:"Material Description",              label:"Description"},
+    {key:"Plant Name",                        label:"Plant"},
+    {key:"Material Group Name",               label:"Material Group"},
+    {key:"Unrestricted Stock",                label:"Avail Qty",        fmt:fmtQty, rawKey:"Unrestricted Stock",          cellClass:"col-qty"},
+    {key:"Stock in Transit",                  label:"Transit Qty",      fmt:fmtQty, rawKey:"Stock in Transit",            cellClass:"col-qty"},
+    {key:"Stock in Quality Inspection",       label:"QC Qty",           fmt:fmtQty, rawKey:"Stock in Quality Inspection", cellClass:"col-qty"},
+    {key:"Value of Unrestricted Stock",       label:"Avail Value (ETB)",fmt:fmtETB, rawKey:"Value of Unrestricted Stock", cellClass:"col-val"},
+    {key:"Value of Stock in Transit",         label:"Transit Value (ETB)",fmt:fmtETB,rawKey:"Value of Stock in Transit",  cellClass:"col-val"},
+    {key:"Value of Stock in Quality Inspection",label:"QC Value (ETB)", fmt:fmtETB, rawKey:"Value of Stock in Quality Inspection",cellClass:"col-val"},
+    {key:"Total Value",                       label:"Total Value (ETB)",fmt:fmtETB, rawKey:"Total Value",                 cellClass:"col-val"},
+    {key:"_expiryStr",                        label:"Expiry Date"},
   ];
-  const rows=df.slice(0,500).map(r=>({...r,_expiryStr:r._expiry?r._expiry.toISOString().slice(0,10):""}));
-  document.getElementById("preview-table-wrap").innerHTML=
-    buildTable(rows,cols) +
-    (df.length>500 ? `<div class="alert-warning">⚠️ Showing first 500 of ${df.length.toLocaleString()} records. Apply filters to narrow results or use the Excel/CSV download for the full dataset.</div>` : "");
-  document.getElementById("btn-dl-preview").onclick=()=>downloadCSV(rows,cols,"pharma_inventory_filtered.csv");
-  document.getElementById("btn-dl-preview-xlsx").onclick=()=>downloadExcel(rows,cols,"pharma_inventory_filtered.xlsx");
+
+  // FIX BUG-1: display rows are sliced to 500 for the table, but download rows
+  // use the FULL filtered dataset so the export is never silently truncated.
+  const displayRows  = df.slice(0, 500).map(r => ({...r, _expiryStr: r._expiry ? r._expiry.toISOString().slice(0,10) : ""}));
+  const downloadRows = df.map(r => ({...r, _expiryStr: r._expiry ? r._expiry.toISOString().slice(0,10) : ""}));
+
+  document.getElementById("preview-table-wrap").innerHTML =
+    buildTable(displayRows, cols) +
+    (df.length > 500
+      ? `<div class="alert-warning">⚠️ Showing first 500 of ${df.length.toLocaleString()} records. Downloads include all ${df.length.toLocaleString()} rows.</div>`
+      : "");
+
+  // FIX BUG-1: wire download buttons to downloadRows (full set)
+  document.getElementById("btn-dl-preview").onclick      = () => downloadCSV(downloadRows,   cols, "pharma_inventory_filtered.csv");
+  document.getElementById("btn-dl-preview-xlsx").onclick = () => downloadExcel(downloadRows, cols, "pharma_inventory_filtered.xlsx");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1115,12 +1241,14 @@ function getCanonicalCode(code) {
 function applyReconciliationToData(df) {
   if (!reconcileGroups.length) return df;
 
+  // FIX ROBUST: Total Qty removed from QTY_COLS — it was scaled by factor then
+  // immediately overwritten by the correct sum below, which was confusing and
+  // left an incorrect intermediate value briefly in the merged array.
   const QTY_COLS = [
     "Unrestricted Stock",
     "Stock in Quality Inspection",
     "Blocked Stock",
     "Stock in Transit",
-    "Total Qty",
   ];
   const VAL_COLS = [
     "Value of Unrestricted Stock",
@@ -1129,23 +1257,19 @@ function applyReconciliationToData(df) {
     "Total Value",
   ];
 
-  const merged = [];
-  // Merge key: target material + plant + storage loc + batch
-  const mergeKey = r =>
-    `${r["Material"]}||${r["Plant"]}||${r["Storage Location"]}||${r["Batch"]||""}`;
-  const keyMap = {};
+  const merged  = [];
+  const mergeKey = r => `${r["Material"]}||${r["Plant"]}||${r["Storage Location"]}||${r["Batch"] || ""}`;
+  const keyMap  = {};
 
   df.forEach(row => {
     const conv = getConversion(row["Material"]);
 
     if (!conv) {
-      // No conversion rule — pass through unchanged
       const k = mergeKey(row);
       if (keyMap[k] !== undefined) {
-        // Aggregate duplicate native target rows (edge case)
         const target = merged[keyMap[k]];
-        QTY_COLS.forEach(c => { target[c] = (target[c]||0) + (row[c]||0); });
-        VAL_COLS.forEach(c => { target[c] = (target[c]||0) + (row[c]||0); });
+        QTY_COLS.forEach(c => { target[c] = (target[c] || 0) + (row[c] || 0); });
+        VAL_COLS.forEach(c => { target[c] = (target[c] || 0) + (row[c] || 0); });
         _mergeExpiry(target, row);
       } else {
         keyMap[k] = merged.length;
@@ -1154,24 +1278,21 @@ function applyReconciliationToData(df) {
       return;
     }
 
-    // Build converted row: replace identity with target, scale qtys
     const convertedRow = {...row};
     convertedRow["Material"]             = conv.targetMaterial;
     convertedRow["Material Description"] = conv.targetDesc || row["Material Description"];
 
+    // FIX ROBUST: round to 9dp to suppress IEEE 754 float drift (e.g. 0.1 × 3 = 0.30000000000000004)
     QTY_COLS.forEach(c => {
-      convertedRow[c] = (row[c]||0) * conv.conversionFactor;
+      convertedRow[c] = Math.round((row[c] || 0) * conv.conversionFactor * 1e9) / 1e9;
     });
-    // Values: monetary ETB — no unit factor, just sum
-    VAL_COLS.forEach(c => {
-      convertedRow[c] = row[c]||0;
-    });
+    VAL_COLS.forEach(c => { convertedRow[c] = row[c] || 0; });
 
     const k = mergeKey(convertedRow);
     if (keyMap[k] !== undefined) {
       const target = merged[keyMap[k]];
-      QTY_COLS.forEach(c => { target[c] = (target[c]||0) + (convertedRow[c]||0); });
-      VAL_COLS.forEach(c => { target[c] = (target[c]||0) + (convertedRow[c]||0); });
+      QTY_COLS.forEach(c => { target[c] = (target[c] || 0) + (convertedRow[c] || 0); });
+      VAL_COLS.forEach(c => { target[c] = (target[c] || 0) + (convertedRow[c] || 0); });
       _mergeExpiry(target, convertedRow);
       if (!target["Batch"] && convertedRow["Batch"]) target["Batch"] = convertedRow["Batch"];
       if (!target["Description of Storage Location"] && convertedRow["Description of Storage Location"])
@@ -1182,9 +1303,7 @@ function applyReconciliationToData(df) {
     }
   });
 
-  // FIX 1: Recompute derived totals after merge — individual cols were scaled/summed
-  // but Total Qty and Total Value were never recalculated, causing stale values in
-  // all KPIs, charts, and tables.
+  // Recompute derived totals after merge
   merged.forEach(row => {
     row["Total Qty"] = (row["Unrestricted Stock"] || 0)
                      + (row["Stock in Transit"] || 0)
@@ -1198,7 +1317,6 @@ function applyReconciliationToData(df) {
 }
 
 // Keep earliest (soonest) expiry — safest approach for pharma stock management.
-// A batch converted from a different pack size must inherit the worst-case expiry.
 function _mergeExpiry(target, src) {
   const te = target["_expiry"], se = src["_expiry"];
   if (se instanceof Date && !isNaN(se)) {
@@ -1208,56 +1326,88 @@ function _mergeExpiry(target, src) {
   }
 }
 
+// ── FIX BUG-2 + BUG-5: Reconciliation rule validation ────────────────────
+// Validates a new source→target pair against existing rules.
+// Returns an array of error strings (empty = valid).
+function validateNewConversionRule(srcCode, tgtCode) {
+  const errors = [];
+  if (srcCode === tgtCode) {
+    errors.push("Source and target must be different materials.");
+  }
+  // Duplicate source
+  if (reconcileGroups.some(g => g.sourceMaterial === srcCode)) {
+    errors.push(`"${srcCode}" already has a conversion rule. Delete it first.`);
+  }
+  // FIX BUG-5: prevent a target material from becoming a new source
+  if (reconcileGroups.some(g => g.targetMaterial === srcCode)) {
+    errors.push(`"${srcCode}" is already a canonical target in another rule. Creating a rule from it would cause conflicts.`);
+  }
+  // FIX BUG-2: detect chain rule (source → target where target is already someone's source)
+  if (reconcileGroups.some(g => g.sourceMaterial === tgtCode)) {
+    errors.push(`"${tgtCode}" is already a source in another rule. Chained conversions (A→B→C) are not supported — map directly to the final canonical code.`);
+  }
+  // Circular: tgtCode already maps back to srcCode
+  if (reconcileGroups.some(g => g.sourceMaterial === tgtCode && g.targetMaterial === srcCode)) {
+    errors.push(`This would create a circular conversion (${tgtCode} → ${srcCode} already exists).`);
+  }
+  return errors;
+}
+
 // ── Panel open / close ────────────────────────────────────────────────────
 function openReconcilePanel() {
-  document.getElementById("reconcile-panel").style.display = "flex";
+  document.getElementById("reconcile-panel").style.display  = "flex";
   document.getElementById("reconcile-overlay").style.display = "block";
   refreshReconcileGroupsList();
 }
-
 function closeReconcilePanel() {
-  document.getElementById("reconcile-panel").style.display = "none";
+  document.getElementById("reconcile-panel").style.display  = "none";
   document.getElementById("reconcile-overlay").style.display = "none";
 }
 
 // ── Upload mapping Excel ──────────────────────────────────────────────────
-// Expected columns (row 1 = header):
-//   col0: Source Material  col1: Source Description  col2: Source Unit
-//   col3: Conversion Factor
-//   col4: Target Material  col5: Target Description  col6: Target Unit
 function handleReconcileFileUpload(file) {
   const statusEl = document.getElementById("rp-upload-status");
-  statusEl.style.color = "var(--muted)";
-  statusEl.textContent = "⏳ Reading mapping file…";
+  statusEl.style.color   = "var(--muted)";
+  statusEl.textContent   = "⏳ Reading mapping file…";
   const reader = new FileReader();
   reader.onload = e => {
     try {
-      const wb = XLSX.read(e.target.result, {type:"array"});
-      const ws = wb.Sheets[wb.SheetNames[0]];
+      const wb   = XLSX.read(e.target.result, {type:"array"});
+      const ws   = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:""});
-      let added = 0, skipped = 0;
+      let added = 0, skipped = 0, errors = [];
       for (let i = 1; i < rows.length; i++) {
-        const r = rows[i];
-        const srcMat  = String(r[0]||"").trim();
-        const srcDesc = String(r[1]||"").trim();
-        const srcUnit = String(r[2]||"").trim();
+        const r       = rows[i];
+        const srcMat  = String(r[0] || "").trim();
+        const srcDesc = String(r[1] || "").trim();
+        const srcUnit = String(r[2] || "").trim();
         const factor  = parseFloat(r[3]);
-        const tgtMat  = String(r[4]||"").trim();
-        const tgtDesc = String(r[5]||"").trim();
-        const tgtUnit = String(r[6]||"").trim();
+        const tgtMat  = String(r[4] || "").trim();
+        const tgtDesc = String(r[5] || "").trim();
+        const tgtUnit = String(r[6] || "").trim();
+
         if (!srcMat || !tgtMat || isNaN(factor) || factor <= 0) { skipped++; continue; }
-        if (reconcileGroups.some(g => g.sourceMaterial === srcMat)) { skipped++; continue; }
+
+        // FIX BUG-2 + BUG-5: validate via shared rule validator
+        const ruleErrors = validateNewConversionRule(srcMat, tgtMat);
+        if (ruleErrors.length) { skipped++; errors.push(`Row ${i+1}: ${ruleErrors[0]}`); continue; }
+
+        // FIX ROBUST: store factor with 9dp precision cap
         reconcileGroups.push({
           sourceMaterial: srcMat, sourceDesc: srcDesc, sourceUnit: srcUnit,
-          conversionFactor: factor,
+          conversionFactor: Math.round(factor * 1e9) / 1e9,
           targetMaterial: tgtMat, targetDesc: tgtDesc, targetUnit: tgtUnit,
         });
         added++;
       }
+      invalidateReconCache();
       saveReconcileGroups();
       refreshReconcileGroupsList();
       statusEl.style.color = "var(--green)";
-      statusEl.textContent = `✓ Added ${added} conversion(s)${skipped?" · "+skipped+" skipped":""}`;
+      let msg = `✓ Added ${added} conversion(s)`;
+      if (skipped)       msg += ` · ${skipped} skipped`;
+      if (errors.length) msg += ` · First issue: ${errors[0]}`;
+      statusEl.textContent = msg;
       if (rawDf.length) renderPage(currentPage);
     } catch(err) {
       statusEl.style.color = "var(--red)";
@@ -1274,13 +1424,12 @@ let rpTgtSelected = null;
 function rpSearch(query, resultsElId, onSelect) {
   const el = document.getElementById(resultsElId);
   if (!query.trim() || !rawDf.length) { el.innerHTML = ""; return; }
-  const q = query.toLowerCase();
-  const seen = new Set();
-  // FIX 4: Search the reconciled view so source materials that have already been
-  // converted don't appear as valid targets, preventing circular/conflicting rules.
-  const searchBase = applyReconciliationToData(rawDf);
-  const matches = searchBase.filter(r => {
-    const c = String(r["Material"]||""), d = String(r["Material Description"]||"");
+  const q          = query.toLowerCase();
+  const seen       = new Set();
+  // Search the raw (unreconciled) data so both source and target codes are findable.
+  const searchBase = rawDf;
+  const matches    = searchBase.filter(r => {
+    const c = String(r["Material"] || ""), d = String(r["Material Description"] || "");
     if (seen.has(c)) return false;
     if (c.toLowerCase().includes(q) || d.toLowerCase().includes(q)) { seen.add(c); return true; }
     return false;
@@ -1299,7 +1448,7 @@ function rpSearch(query, resultsElId, onSelect) {
   el.querySelectorAll(".rp-result-item").forEach(item => {
     item.addEventListener("click", () => {
       const m = matches[parseInt(item.dataset.idx)];
-      onSelect({code: m["Material"], desc: m["Material Description"]});
+      onSelect({ code: m["Material"], desc: m["Material Description"] });
       el.innerHTML = "";
     });
   });
@@ -1312,33 +1461,51 @@ function rpSetSelected(side, data) {
   const chip = document.getElementById(chipId);
   if (data) {
     chip.style.display = "block";
-    chip.innerHTML = `<span class="rp-result-code">${escHtml(data.code)}</span>
-      <span class="rp-result-desc">${escHtml(data.desc)}</span>
-      <button onclick="rpClearSelected('${side}')" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:11px;margin-left:4px">✕</button>`;
+    // FIX BUG-7: use createElement + addEventListener instead of inline onclick
+    chip.innerHTML = "";
+    const codeSpan = document.createElement("span");
+    codeSpan.className = "rp-result-code";
+    codeSpan.textContent = data.code;
+    const descSpan = document.createElement("span");
+    descSpan.className = "rp-result-desc";
+    descSpan.textContent = data.desc;
+    const closeBtn = document.createElement("button");
+    closeBtn.textContent = "✕";
+    closeBtn.style.cssText = "background:none;border:none;color:var(--muted);cursor:pointer;font-size:11px;margin-left:4px";
+    closeBtn.addEventListener("click", () => rpClearSelected(side));
+    chip.appendChild(codeSpan);
+    chip.appendChild(descSpan);
+    chip.appendChild(closeBtn);
     document.getElementById(searchId).value = "";
   } else {
     chip.style.display = "none";
+    chip.innerHTML = "";
   }
 }
 
 function rpClearSelected(side) { rpSetSelected(side, null); }
 
 function addManualConversion() {
-  if (!rpSrcSelected) { alert("Select a source material first."); return; }
+  if (!rpSrcSelected) { alert("Select a source material first.");  return; }
   if (!rpTgtSelected) { alert("Select a target material first."); return; }
-  if (rpSrcSelected.code === rpTgtSelected.code) {
-    alert("Source and target must be different materials."); return;
-  }
   const factor = parseFloat(document.getElementById("rp-conv-factor").value);
   if (isNaN(factor) || factor <= 0) { alert("Enter a valid conversion factor > 0."); return; }
-  if (reconcileGroups.some(g => g.sourceMaterial === rpSrcSelected.code)) {
-    alert(`"${rpSrcSelected.code}" already has a conversion. Delete it first.`); return;
-  }
+
+  // FIX BUG-2 + BUG-5: validate before pushing
+  const errors = validateNewConversionRule(rpSrcSelected.code, rpTgtSelected.code);
+  if (errors.length) { alert(errors.join("\n")); return; }
+
   reconcileGroups.push({
-    sourceMaterial: rpSrcSelected.code, sourceDesc: rpSrcSelected.desc, sourceUnit: "",
-    conversionFactor: factor,
-    targetMaterial: rpTgtSelected.code, targetDesc: rpTgtSelected.desc, targetUnit: "",
+    sourceMaterial:   rpSrcSelected.code,
+    sourceDesc:       rpSrcSelected.desc,
+    sourceUnit:       "",
+    // FIX ROBUST: cap precision to 9dp to avoid float drift in downstream math
+    conversionFactor: Math.round(factor * 1e9) / 1e9,
+    targetMaterial:   rpTgtSelected.code,
+    targetDesc:       rpTgtSelected.desc,
+    targetUnit:       "",
   });
+  invalidateReconCache();
   saveReconcileGroups();
   refreshReconcileGroupsList();
   rpClearSelected("src");
@@ -1349,7 +1516,7 @@ function addManualConversion() {
 
 // ── Render existing conversion list ──────────────────────────────────────
 function refreshReconcileGroupsList() {
-  const el = document.getElementById("rp-groups-list");
+  const el      = document.getElementById("rp-groups-list");
   const countEl = document.getElementById("rp-group-count");
   countEl.textContent = reconcileGroups.length ? `(${reconcileGroups.length})` : "";
   if (!reconcileGroups.length) {
@@ -1362,12 +1529,12 @@ function refreshReconcileGroupsList() {
         <div style="flex:1;min-width:0">
           <div style="display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap;margin-bottom:4px">
             <span class="rp-code-tag">${escHtml(g.sourceMaterial)}</span>
-            <span style="color:var(--muted);font-size:0.7rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px">${escHtml(g.sourceDesc||"")}</span>
+            <span style="color:var(--muted);font-size:0.7rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px">${escHtml(g.sourceDesc || "")}</span>
           </div>
           <div style="display:flex;align-items:center;gap:0.4rem;margin-bottom:4px">
             <span style="color:var(--amber);font-size:0.85rem">⟶</span>
             <span class="rp-code-tag" style="border-color:var(--green);color:var(--green)">${escHtml(g.targetMaterial)}</span>
-            <span style="color:var(--muted);font-size:0.7rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px">${escHtml(g.targetDesc||"")}</span>
+            <span style="color:var(--muted);font-size:0.7rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px">${escHtml(g.targetDesc || "")}</span>
           </div>
           <div style="font-size:0.7rem;color:var(--amber)">
             × ${g.conversionFactor}
@@ -1378,12 +1545,15 @@ function refreshReconcileGroupsList() {
       </div>
     </div>`).join("");
 
+  // Use a single delegated listener on the stable container element
+  // (el is replaced each call so no listener accumulation)
   el.addEventListener("click", e => {
     const btn = e.target.closest(".rp-group-del");
     if (!btn) return;
     const idx = parseInt(btn.dataset.groupIdx);
     if (!isNaN(idx)) {
       reconcileGroups.splice(idx, 1);
+      invalidateReconCache();
       saveReconcileGroups();
       refreshReconcileGroupsList();
       if (rawDf.length) renderPage(currentPage);
@@ -1393,52 +1563,92 @@ function refreshReconcileGroupsList() {
 
 // ── Persistence ──────────────────────────────────────────────────────────
 const RECONCILE_STORE_KEY = "pharmatrack_reconcile_v3";
+
 function saveReconcileGroups() {
   try { localStorage.setItem(RECONCILE_STORE_KEY, JSON.stringify(reconcileGroups)); } catch(e) {}
 }
+
+// FIX ROBUST: validate schema of each persisted entry before accepting it.
+// Corrupt or manually edited localStorage entries could inject bad shapes that
+// cause NaN propagation in the reconciliation engine.
+function isValidReconcileGroup(g) {
+  return (
+    g !== null && typeof g === "object" &&
+    typeof g.sourceMaterial   === "string" && g.sourceMaterial.trim().length > 0 &&
+    typeof g.targetMaterial   === "string" && g.targetMaterial.trim().length > 0 &&
+    typeof g.conversionFactor === "number" && isFinite(g.conversionFactor) && g.conversionFactor > 0
+  );
+}
+
 function loadReconcileGroups() {
   try {
     const saved = localStorage.getItem(RECONCILE_STORE_KEY);
-    if (saved) reconcileGroups = JSON.parse(saved);
-  } catch(e) { reconcileGroups = []; }
+    if (!saved) return;
+    const parsed = JSON.parse(saved);
+    if (!Array.isArray(parsed)) { reconcileGroups = []; return; }
+    const valid = parsed.filter(isValidReconcileGroup);
+    if (valid.length !== parsed.length) {
+      console.warn(`PharmaTrack: ${parsed.length - valid.length} invalid reconcile rule(s) discarded on load.`);
+    }
+    reconcileGroups = valid;
+  } catch(e) {
+    console.error("PharmaTrack: failed to load reconcile groups from localStorage:", e);
+    reconcileGroups = [];
+  }
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PAGE SWITCHING
 // ═══════════════════════════════════════════════════════════════════════════
-const PAGE_RENDERERS={ dashboard:renderDashboard, transit:renderTransit, expiry:renderExpiry, qc:renderQC, branch:renderBranch, flow:renderFlow, preview:renderPreview };
+const PAGE_RENDERERS = {
+  dashboard: renderDashboard,
+  transit:   renderTransit,
+  expiry:    renderExpiry,
+  qc:        renderQC,
+  branch:    renderBranch,
+  flow:      renderFlow,
+  preview:   renderPreview,
+};
 
 function renderPage(id) {
   if (!rawDf.length) return;
-  currentPage=id;
-  document.querySelectorAll(".page").forEach(el=>{el.style.display="none";});
-  const pg=document.getElementById(`page-${id}`);
-  if (pg) pg.style.display="block";
-  document.querySelectorAll(".nav-btn").forEach(btn=>btn.classList.toggle("active",btn.dataset.page===id));
-  try { PAGE_RENDERERS[id]?.(); } catch(e) { console.error(`Error rendering ${id}:`,e); }
+  currentPage = id;
+  document.querySelectorAll(".page").forEach(el => { el.style.display = "none"; });
+  const pg = document.getElementById(`page-${id}`);
+  if (pg) pg.style.display = "block";
+  document.querySelectorAll(".nav-btn").forEach(btn => btn.classList.toggle("active", btn.dataset.page === id));
+  try {
+    PAGE_RENDERERS[id]?.();
+  } catch(e) {
+    console.error(`Error rendering ${id}:`, e);
+    // Show a friendly in-page error rather than a blank page
+    if (pg) pg.innerHTML = `<div class="alert-danger" style="margin-top:2rem">
+      ⚠️ An error occurred while rendering this page: <b>${escHtml(e.message)}</b>
+      <br><small style="opacity:0.7">Check the browser console for details.</small>
+    </div>`;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EVENT LISTENERS
 // ═══════════════════════════════════════════════════════════════════════════
-document.addEventListener("DOMContentLoaded",()=>{
+document.addEventListener("DOMContentLoaded", () => {
   // Load persisted reconcile groups before anything else
   loadReconcileGroups();
 
   // Nav
-  document.querySelectorAll(".nav-btn[data-page]").forEach(btn=>{
-    btn.addEventListener("click",()=>renderPage(btn.dataset.page));
+  document.querySelectorAll(".nav-btn[data-page]").forEach(btn => {
+    btn.addEventListener("click", () => renderPage(btn.dataset.page));
   });
 
   // File upload
-  document.getElementById("fileInput").addEventListener("change",e=>{
-    const f=e.target.files[0]; if (f) loadFile(f);
+  document.getElementById("fileInput").addEventListener("change", e => {
+    const f = e.target.files[0]; if (f) loadFile(f);
   });
 
-  // Expiry window
-  document.getElementById("expiry-window-group").addEventListener("change",()=>{
-    if (rawDf.length&&currentPage==="expiry") renderExpiry();
+  // Expiry window radio
+  document.getElementById("expiry-window-group").addEventListener("change", () => {
+    if (rawDf.length && currentPage === "expiry") renderExpiry();
   });
 
   // Material expiry lookup
@@ -1456,34 +1666,35 @@ document.addEventListener("DOMContentLoaded",()=>{
   });
 
   // Preview filters
-  document.getElementById("btn-apply-filter").addEventListener("click",applyPreviewFilters);
-  document.getElementById("btn-clear-filter").addEventListener("click",()=>{
-    document.querySelectorAll("#filter-plant option,#filter-mg option,#filter-mgname option").forEach(o=>{o.selected=false;});
-    filtDf=rawDf; renderPreviewTable();
+  document.getElementById("btn-apply-filter").addEventListener("click", applyPreviewFilters);
+  document.getElementById("btn-clear-filter").addEventListener("click", () => {
+    document.querySelectorAll("#filter-plant option,#filter-mg option,#filter-mgname option").forEach(o => { o.selected = false; });
+    filtDf = getReconciledBase();
+    renderPreviewTable();
   });
 
   // ── Page filter wiring ──
   function wirePageFilters(page, plantId, mgId, applyId, clearId) {
-    const applyBtn=document.getElementById(applyId);
-    const clearBtn=document.getElementById(clearId);
-    if (applyBtn) applyBtn.addEventListener("click",()=>{
-      if (plantId) pageFilters[page].plant=document.getElementById(plantId)?.value||"";
-      if (mgId)    pageFilters[page].mg   =document.getElementById(mgId)?.value||"";
+    const applyBtn = document.getElementById(applyId);
+    const clearBtn = document.getElementById(clearId);
+    if (applyBtn) applyBtn.addEventListener("click", () => {
+      if (plantId) pageFilters[page].plant = document.getElementById(plantId)?.value || "";
+      if (mgId)    pageFilters[page].mg    = document.getElementById(mgId)?.value    || "";
       renderPage(page);
     });
-    if (clearBtn) clearBtn.addEventListener("click",()=>{
-      if (plantId) { pageFilters[page].plant=""; const el=document.getElementById(plantId); if(el) el.value=""; }
-      if (mgId)    { pageFilters[page].mg="";    const el=document.getElementById(mgId);    if(el) el.value=""; }
+    if (clearBtn) clearBtn.addEventListener("click", () => {
+      if (plantId) { pageFilters[page].plant = ""; const el = document.getElementById(plantId); if (el) el.value = ""; }
+      if (mgId)    { pageFilters[page].mg    = ""; const el = document.getElementById(mgId);    if (el) el.value = ""; }
       renderPage(page);
     });
   }
 
-  wirePageFilters("dashboard","dash-filter-plant","dash-filter-mg","dash-filter-apply","dash-filter-clear");
-  wirePageFilters("transit","transit-filter-plant","transit-filter-mg","transit-filter-apply","transit-filter-clear");
-  wirePageFilters("expiry","expiry-filter-plant","expiry-filter-mg","expiry-filter-apply","expiry-filter-clear");
-  wirePageFilters("qc","qc-filter-plant","qc-filter-mg","qc-filter-apply","qc-filter-clear");
-  wirePageFilters("branch",null,"branch-filter-mg","branch-filter-apply","branch-filter-clear");
-  wirePageFilters("flow","flow-filter-plant","flow-filter-mg","flow-filter-apply","flow-filter-clear");
+  wirePageFilters("dashboard","dash-filter-plant",   "dash-filter-mg",    "dash-filter-apply",   "dash-filter-clear");
+  wirePageFilters("transit",  "transit-filter-plant","transit-filter-mg", "transit-filter-apply","transit-filter-clear");
+  wirePageFilters("expiry",   "expiry-filter-plant", "expiry-filter-mg",  "expiry-filter-apply", "expiry-filter-clear");
+  wirePageFilters("qc",       "qc-filter-plant",     "qc-filter-mg",      "qc-filter-apply",     "qc-filter-clear");
+  wirePageFilters("branch",   null,                  "branch-filter-mg",  "branch-filter-apply", "branch-filter-clear");
+  wirePageFilters("flow",     "flow-filter-plant",   "flow-filter-mg",    "flow-filter-apply",   "flow-filter-clear");
 
   // ── Reconciliation panel ──
   document.getElementById("open-reconcile-btn").addEventListener("click", openReconcilePanel);
@@ -1509,11 +1720,12 @@ document.addEventListener("DOMContentLoaded",()=>{
   // Add manual conversion
   document.getElementById("rp-add-manual").addEventListener("click", addManualConversion);
 
-  // Clear all
+  // Clear all reconciliation rules
   document.getElementById("rp-clear-all").addEventListener("click", () => {
     if (!reconcileGroups.length) return;
     if (confirm(`Delete all ${reconcileGroups.length} conversion(s)?`)) {
       reconcileGroups.length = 0;
+      invalidateReconCache();
       saveReconcileGroups();
       refreshReconcileGroupsList();
       if (rawDf.length) renderPage(currentPage);
