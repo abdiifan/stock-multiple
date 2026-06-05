@@ -342,3 +342,12 @@ tbody tr.row-blue   { background: rgba(88,166,255,0.08); }
   #sidebar { display: none; }
   #main    { margin-left: 0; }
 }
+
+/* Transit file upload button */
+.transit-upload-btn {
+  border-color: #58a6ff;
+  color: #58a6ff;
+}
+.transit-upload-btn:hover {
+  background: rgba(88,166,255,0.08);
+}
