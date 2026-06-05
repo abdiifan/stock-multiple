@@ -205,6 +205,7 @@ function loadFile(file) {
         showSuccess(file.name, df.length);
         clearError();
         hideLanding();
+        document.getElementById("global-search-bar").style.display = "block";
         populateAllFilters();
         // Re-render home KPIs then switch to dashboard
         renderPage("home");
@@ -2007,3 +2008,127 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 });
+
+// ── GLOBAL MATERIAL SEARCH ─────────────────────────────────────────────────
+(function () {
+  function fmt(n) {
+    if (n == null || isNaN(+n)) return "—";
+    return (+n).toLocaleString(undefined, { maximumFractionDigits: 2 });
+  }
+
+  function buildTable(cols, rows) {
+    if (!rows.length) return '<p class="gsr-no-data">No matching records found.</p>';
+    let html = '<div class="tbl-wrap"><table><thead><tr>';
+    cols.forEach(c => { html += `<th>${c.label}</th>`; });
+    html += "</tr></thead><tbody>";
+    rows.slice(0, 200).forEach(r => {
+      html += "<tr>";
+      cols.forEach(c => {
+        const v = r[c.key] ?? "—";
+        const cls = c.cls ? ` class="${c.cls}"` : "";
+        html += `<td${cls}>${v}</td>`;
+      });
+      html += "</tr>";
+    });
+    html += "</tbody></table></div>";
+    if (rows.length > 200) {
+      html += `<p class="gsr-no-data" style="margin-top:0.4rem">Showing first 200 of ${rows.length} rows. Narrow your search for more precision.</p>`;
+    }
+    return html;
+  }
+
+  function runSearch() {
+    const q = (document.getElementById("global-search-input").value || "").trim().toLowerCase();
+    const out = document.getElementById("global-search-results");
+    if (!q) { out.innerHTML = ""; return; }
+
+    // ── In-Stock results ──
+    const base = rawDf;
+    const stockRows = base.filter(r => {
+      const code = String(r["Material"] || "").toLowerCase();
+      const desc = String(r["Material Description"] || "").toLowerCase();
+      return code.includes(q) || desc.includes(q);
+    });
+
+    const stockCols = [
+      { key: "Material",             label: "Material" },
+      { key: "Material Description", label: "Description" },
+      { key: "Plant",                label: "Plant" },
+      { key: "Plant Name",           label: "Plant Name" },
+      { key: "Material Group Name",  label: "Material Group" },
+      { key: "Unrestricted Stock",   label: "Unrestricted Qty",  cls: "col-qty" },
+      { key: "Value of Unrestricted Stock", label: "Value (ETB)", cls: "col-val" },
+      { key: "Shelf Life Expiration Date",  label: "Expiry" },
+    ];
+
+    // ── Transit results (from separate transit file) ──
+    const transitCols = [
+      { key: "_st_material", label: "Material" },
+      { key: "_st_desc",     label: "Description" },
+      { key: "_st_pur_doc",  label: "Purch. Doc." },
+      { key: "_st_sup_plant",label: "Supplying Plant" },
+      { key: "_st_qty",      label: "Qty", cls: "col-qty" },
+      { key: "_st_uom",      label: "UoM" },
+    ];
+    const transitRows = stockTransitRaw.filter(r => {
+      const code = String(r["_st_material"] || "").toLowerCase();
+      const desc = String(r["_st_desc"]     || "").toLowerCase();
+      return code.includes(q) || desc.includes(q);
+    });
+
+    // ── Also search "Stock in Transit" column in main data ──
+    const inTransitMain = base.filter(r => {
+      const code = String(r["Material"] || "").toLowerCase();
+      const desc = String(r["Material Description"] || "").toLowerCase();
+      const hasTransit = parseFloat(r["Stock in Transit"] || 0) > 0;
+      return hasTransit && (code.includes(q) || desc.includes(q));
+    });
+
+    let html = "";
+
+    // In-Stock section
+    html += `<div class="gsr-section-title">
+      <span class="gsr-badge gsr-badge-stock">In Stock</span>
+      ${stockRows.length} record${stockRows.length !== 1 ? "s" : ""} found
+    </div>`;
+    html += buildTable(stockCols, stockRows);
+
+    // Transit from separate file (if uploaded)
+    if (stockTransitRaw.length > 0) {
+      html += `<div class="gsr-section-title" style="margin-top:1.2rem">
+        <span class="gsr-badge gsr-badge-transit">In Transit (Transit File)</span>
+        ${transitRows.length} record${transitRows.length !== 1 ? "s" : ""} found
+      </div>`;
+      html += buildTable(transitCols, transitRows);
+    } else if (inTransitMain.length > 0) {
+      // Fallback: show in-transit column from main data
+      html += `<div class="gsr-section-title" style="margin-top:1.2rem">
+        <span class="gsr-badge gsr-badge-transit">In Transit (from inventory data)</span>
+        ${inTransitMain.length} record${inTransitMain.length !== 1 ? "s" : ""} found
+      </div>`;
+      const tCols = [
+        { key: "Material",             label: "Material" },
+        { key: "Material Description", label: "Description" },
+        { key: "Plant",                label: "Plant" },
+        { key: "Stock in Transit",     label: "Transit Qty", cls: "col-qty" },
+        { key: "Value of Stock in Transit", label: "Transit Value (ETB)", cls: "col-val" },
+      ];
+      html += buildTable(tCols, inTransitMain);
+    }
+
+    out.innerHTML = html;
+  }
+
+  function clearSearch() {
+    document.getElementById("global-search-input").value = "";
+    document.getElementById("global-search-results").innerHTML = "";
+  }
+
+  document.addEventListener("DOMContentLoaded", () => {
+    document.getElementById("global-search-btn").addEventListener("click", runSearch);
+    document.getElementById("global-search-clear").addEventListener("click", clearSearch);
+    document.getElementById("global-search-input").addEventListener("keydown", e => {
+      if (e.key === "Enter") runSearch();
+    });
+  });
+})();
