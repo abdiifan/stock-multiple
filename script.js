@@ -52,6 +52,10 @@ let rawDf  = [];
 let filtDf = [];
 let currentPage = "dashboard";
 
+// Stock-in-Transit separate file state
+let stockTransitRaw    = [];   // raw rows from the transit xlsx
+let stFilterState      = { purDoc: "", supPlant: "" };  // filter state
+
 // Page-level filter state
 const pageFilters = {
   dashboard: { plant: "", mg: "" },
@@ -424,6 +428,150 @@ function renderDashboard() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// STOCK IN TRANSIT FILE LOADER
+// Loads the separate stock-in-transit Excel (columns: Material, Material
+// Description, Plant, Name 1, Purchasing Document, Item, Supplying Plant,
+// Special Stock, Quantity, Base Unit of Measure, …).
+// Applies the same isNonMedicalCode / isNonMedicalGroup filters as the
+// main inventory file so only medical items appear.
+// ═══════════════════════════════════════════════════════════════════════════
+function loadTransitFile(file) {
+  const statusEl = document.getElementById("transitFileStatus");
+  statusEl.style.display = "block";
+  statusEl.innerHTML = `<div class="status-ok">⏳ LOADING…</div><div class="status-name">Parsing ${escHtml(file.name)}</div>`;
+
+  const reader = new FileReader();
+  reader.onload = e => {
+    setTimeout(() => {
+      try {
+        const wb   = XLSX.read(new Uint8Array(e.target.result), { type: "array" });
+        const ws   = wb.Sheets[wb.SheetNames[0]];
+        const data = XLSX.utils.sheet_to_json(ws, { defval: "" });
+        if (!data.length) {
+          statusEl.innerHTML = `<div class="status-ok" style="color:var(--red)">✗ Empty file</div>`;
+          return;
+        }
+
+        // Trim all column headers
+        const trimmed = data.map(row => {
+          const r = {};
+          for (const [k, v] of Object.entries(row)) r[k.trim()] = v;
+          return r;
+        });
+
+        // Normalise key column names (case-insensitive lookup)
+        const colMap = {};
+        if (trimmed.length) {
+          Object.keys(trimmed[0]).forEach(k => { colMap[k.toLowerCase()] = k; });
+        }
+        const getCol = name => colMap[name.toLowerCase()] || name;
+
+        // Apply the same medical filters as the main file
+        let df = trimmed.filter(r => {
+          const mat = String(r[getCol("Material")] ?? "").trim();
+          return mat && !isNonMedicalCode(mat);
+        });
+
+        // Normalise Purchasing Document (may come as scientific notation from Excel)
+        df = df.map(r => {
+          const raw = String(r[getCol("Purchasing Document")] ?? "").trim();
+          let purDoc = raw;
+          if (/e/i.test(raw)) purDoc = String(Math.round(Number(raw)));
+          return {
+            "_st_material":     String(r[getCol("Material")]             ?? "").trim(),
+            "_st_desc":         String(r[getCol("Material Description")] ?? "").trim(),
+            "_st_plant":        String(r[getCol("Plant")]                ?? "").trim(),
+            "_st_plantName":    String(r[getCol("Name 1")]               ?? r[getCol("Plant Name")] ?? "").trim(),
+            "_st_purDoc":       purDoc,
+            "_st_supPlant":     String(r[getCol("Supplying Plant")]      ?? "").trim(),
+            "_st_qty":          parseFloat(r[getCol("Quantity")] ?? r[getCol("Order Quantity")] ?? 0) || 0,
+            "_st_uom":          String(r[getCol("Base Unit of Measure")] ?? r[getCol("Order Unit")] ?? "").trim(),
+            "_st_item":         String(r[getCol("Item")]                 ?? "").trim(),
+            "_st_specialStock": String(r[getCol("Special Stock")]        ?? "").trim(),
+          };
+        });
+
+        stockTransitRaw = df;
+        stFilterState   = { purDoc: "", supPlant: "" };
+
+        // Update status
+        statusEl.innerHTML = `<div class="status-ok">✓ TRANSIT FILE LOADED</div><div class="status-name">${escHtml(file.name)} (${df.length.toLocaleString()} records)</div>`;
+        document.getElementById("transitUploadBtnText").textContent = "📦 Change Transit File";
+
+        // If currently on transit page, re-render to show the new section
+        if (currentPage === "transit") renderStockTransitSection();
+      } catch (err) {
+        statusEl.innerHTML = `<div class="status-ok" style="color:var(--red)">✗ ${escHtml(err.message)}</div>`;
+      }
+    }, 30);
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+// ─── Render the Stock in Transit detail section (lower half of Transit page) ─
+function renderStockTransitSection() {
+  const noFileEl  = document.getElementById("stock-transit-no-file");
+  const contentEl = document.getElementById("stock-transit-content");
+
+  if (!stockTransitRaw.length) {
+    noFileEl.style.display  = "block";
+    contentEl.style.display = "none";
+    return;
+  }
+
+  noFileEl.style.display  = "none";
+  contentEl.style.display = "block";
+
+  // Populate Purchasing Document filter dropdown
+  const purDocs = [...new Set(stockTransitRaw.map(r => r._st_purDoc).filter(Boolean))].sort();
+  const supPlants = [...new Set(stockTransitRaw.map(r => r._st_supPlant).filter(Boolean))].sort();
+
+  const purDocEl   = document.getElementById("st-filter-pur-doc");
+  const supPlantEl = document.getElementById("st-filter-sup-plant");
+
+  purDocEl.innerHTML   = `<option value="">All Purchasing Documents</option>` +
+    purDocs.map(d => `<option value="${escHtml(d)}"${stFilterState.purDoc === d ? " selected" : ""}>${escHtml(d)}</option>`).join("");
+  supPlantEl.innerHTML = `<option value="">All Supplying Plants</option>` +
+    supPlants.map(p => `<option value="${escHtml(p)}"${stFilterState.supPlant === p ? " selected" : ""}>${escHtml(p)}</option>`).join("");
+
+  // Apply active filters from stFilterState
+  let df = stockTransitRaw.filter(r =>
+    (!stFilterState.purDoc   || r._st_purDoc   === stFilterState.purDoc) &&
+    (!stFilterState.supPlant || r._st_supPlant === stFilterState.supPlant)
+  );
+
+  // KPIs
+  const uniqMats    = new Set(df.map(r => r._st_material)).size;
+  const uniqPurDocs = new Set(df.map(r => r._st_purDoc).filter(Boolean)).size;
+  const uniqSup     = new Set(df.map(r => r._st_supPlant).filter(Boolean)).size;
+  const totalQty    = df.reduce((s, r) => s + r._st_qty, 0);
+  setKpis("st-kpis", [
+    ["Total Records",          df.length.toLocaleString(),    "After filter",           "blue"],
+    ["Unique Materials",       uniqMats.toLocaleString(),     "Distinct SKUs",          "green"],
+    ["Purchasing Documents",   uniqPurDocs.toLocaleString(),  "Distinct POs/STO docs",  "amber"],
+    ["Supplying Plants",       uniqSup.toLocaleString(),      "Source locations",       "purple"],
+    ["Total Qty in Transit",   fmtQty(totalQty),              "Units",                  "blue"],
+  ]);
+
+  // Table columns
+  const stCols = [
+    { key: "_st_material",  label: "Material" },
+    { key: "_st_desc",      label: "Description" },
+    { key: "_st_plant",     label: "Plant Code" },
+    { key: "_st_plantName", label: "Plant Name" },
+    { key: "_st_purDoc",    label: "Purchasing Document" },
+    { key: "_st_item",      label: "Item" },
+    { key: "_st_supPlant",  label: "Supplying Plant" },
+    { key: "_st_qty",       label: "Quantity", fmt: fmtQty, rawKey: "_st_qty", cellClass: "col-qty" },
+    { key: "_st_uom",       label: "UOM" },
+  ];
+
+  document.getElementById("st-table-wrap").innerHTML = buildTable(df, stCols);
+  document.getElementById("btn-dl-st-csv").onclick  = () => downloadCSV(df,   stCols, "stock_in_transit_detail.csv");
+  document.getElementById("btn-dl-st-xlsx").onclick = () => downloadExcel(df, stCols, "stock_in_transit_detail.xlsx");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // TRANSIT
 // ═══════════════════════════════════════════════════════════════════════════
 function renderTransit() {
@@ -491,6 +639,9 @@ function renderTransit() {
     document.getElementById("ho01-kpis").innerHTML = `<div class="alert-info">No HO01 transit records found.</div>`;
     document.getElementById("ho01-table-wrap").innerHTML = "";
   }
+
+  // Render the separate Stock in Transit file section
+  renderStockTransitSection();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1709,6 +1860,25 @@ document.addEventListener("DOMContentLoaded", () => {
   // File upload
   document.getElementById("fileInput").addEventListener("change", e => {
     const f = e.target.files[0]; if (f) loadFile(f);
+  });
+
+  // Stock in Transit file upload
+  document.getElementById("transitFileInput").addEventListener("change", e => {
+    const f = e.target.files[0]; if (f) loadTransitFile(f);
+    e.target.value = "";
+  });
+
+  // Stock in Transit section filter wiring
+  document.getElementById("st-filter-apply").addEventListener("click", () => {
+    stFilterState.purDoc   = document.getElementById("st-filter-pur-doc").value   || "";
+    stFilterState.supPlant = document.getElementById("st-filter-sup-plant").value || "";
+    renderStockTransitSection();
+  });
+  document.getElementById("st-filter-clear").addEventListener("click", () => {
+    stFilterState = { purDoc: "", supPlant: "" };
+    document.getElementById("st-filter-pur-doc").value   = "";
+    document.getElementById("st-filter-sup-plant").value = "";
+    renderStockTransitSection();
   });
 
   // Expiry window radio
