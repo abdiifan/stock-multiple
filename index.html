@@ -97,6 +97,14 @@
   <div id="fileStatus"></div>
 
   <div class="sidebar-divider"></div>
+  <div class="upload-label">Stock in Transit</div>
+  <label class="upload-btn transit-upload-btn" for="transitFileInput">
+    <span id="transitUploadBtnText">📦 Upload Transit Excel</span>
+    <input type="file" id="transitFileInput" accept=".xlsx,.xls" />
+  </label>
+  <div id="transitFileStatus"></div>
+
+  <div class="sidebar-divider"></div>
   <button class="nav-btn reconcile-nav-btn" id="open-reconcile-btn">🔗 Material Reconciliation</button>
 
   <div class="sidebar-footer">PharmaTrack v2.0 · ETB Currency</div>
@@ -259,6 +267,35 @@
     <div class="kpi-row" id="ho01-kpis"></div>
     <div id="ho01-table-wrap" style="margin-top:1rem"></div>
     <button class="dl-btn" id="btn-dl-ho01">⬇ Download HO01 Transit (CSV)</button>
+
+    <!-- ── STOCK IN TRANSIT FILE SECTION ── -->
+    <div id="stock-transit-section" style="margin-top:2rem">
+      <div class="ho01-banner" style="background:linear-gradient(90deg,rgba(88,166,255,0.10) 0%,rgba(88,166,255,0.03) 100%);border-left-color:#58a6ff">
+        <div class="ho01-label" style="color:#58a6ff">Separate Transit File</div>
+        <div class="ho01-title" style="color:#e6edf3">📦 Stock in Transit — Purchasing &amp; Supply Detail</div>
+        <div class="ho01-sub">Upload the Stock in Transit Excel from the sidebar to view Purchasing Document &amp; Supplying Plant per material</div>
+      </div>
+      <div id="stock-transit-no-file" class="alert-info" style="margin-top:0.8rem">
+        ℹ️ No Stock in Transit file uploaded yet. Use <b>📦 Upload Transit Excel</b> in the sidebar.
+      </div>
+      <div id="stock-transit-content" style="display:none">
+        <div class="filter-bar" style="margin-top:0.8rem">
+          <select id="st-filter-pur-doc" class="filter-select"><option value="">All Purchasing Documents</option></select>
+          <select id="st-filter-sup-plant" class="filter-select"><option value="">All Supplying Plants</option></select>
+          <button class="apply-btn small" id="st-filter-apply">Apply</button>
+          <button class="apply-btn secondary small" id="st-filter-clear">Clear</button>
+        </div>
+        <div class="kpi-row" id="st-kpis"></div>
+        <div class="section-header" style="margin-top:1rem;display:flex;align-items:center;justify-content:space-between">
+          <span>Transit Detail — Purchasing Document &amp; Supplying Plant</span>
+          <div style="display:flex;gap:0.5rem">
+            <button class="dl-btn" id="btn-dl-st-xlsx" style="font-size:0.72rem;padding:4px 10px">⬇ Excel</button>
+            <button class="dl-btn" id="btn-dl-st-csv" style="font-size:0.72rem;padding:4px 10px">⬇ CSV</button>
+          </div>
+        </div>
+        <div id="st-table-wrap" style="margin-top:0.5rem"></div>
+      </div>
+    </div>
   </section>
 
   <!-- ── EXPIRY ── -->
