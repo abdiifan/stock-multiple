@@ -571,6 +571,27 @@ function renderStockTransitSection() {
   document.getElementById("btn-dl-st-xlsx").onclick = () => downloadExcel(df, stCols, "stock_in_transit_detail.xlsx");
 }
 
+// ─── Lookup helper: get Purchasing Document(s) and Supplying Plant(s) ─────
+// For a given material code + plant code, scans stockTransitRaw and returns
+// deduplicated comma-separated values. Falls back to "—" when no transit file
+// is loaded or no matching rows exist.
+function getTransitInfo(material, plantCode) {
+  if (!stockTransitRaw.length) return { purDoc: "—", supPlant: "—" };
+  const mat  = String(material  || "").trim();
+  const plt  = String(plantCode || "").trim().toUpperCase();
+  const hits = stockTransitRaw.filter(r =>
+    r._st_material === mat &&
+    (plt === "" || r._st_plant.toUpperCase() === plt)
+  );
+  if (!hits.length) return { purDoc: "—", supPlant: "—" };
+  const purDocs  = [...new Set(hits.map(r => r._st_purDoc).filter(Boolean))];
+  const supPlants= [...new Set(hits.map(r => r._st_supPlant).filter(Boolean))];
+  return {
+    purDoc:   purDocs.length   ? purDocs.join(", ")   : "—",
+    supPlant: supPlants.length ? supPlants.join(", ") : "—",
+  };
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // TRANSIT
 // ═══════════════════════════════════════════════════════════════════════════
@@ -602,17 +623,24 @@ function renderTransit() {
     {key:"Material Description",      label:"Description"},
     {key:"Material Group Name",       label:"Material Group"},
     {key:"Plant Name",                label:"Plant"},
+    {key:"_purDoc",                   label:"Purchasing Document"},
+    {key:"_supPlant",                 label:"Supplying Plant"},
     {key:"Stock in Transit",          label:"Transit Qty",       fmt:fmtQty, rawKey:"Stock in Transit",          cellClass:"col-qty"},
     {key:"Value of Stock in Transit", label:"Transit Value (ETB)",fmt:fmtETB, rawKey:"Value of Stock in Transit", cellClass:"col-val"},
     {key:"_status",                   label:"Status", raw:true},
   ];
-  const transitRows = sortBy([...df], "Value of Stock in Transit").map(r => ({
-    ...r,
-    _status: r["Value of Stock in Transit"] > 100000 ? "<span class='badge badge-red'>Critical</span>"
-           : r["Value of Stock in Transit"] > 50000  ? "<span class='badge badge-amber'>High</span>"
-           : r["Value of Stock in Transit"] > 10000  ? "<span class='badge badge-amber'>Medium</span>"
-           : "<span class='badge badge-green'>Low</span>",
-  }));
+  const transitRows = sortBy([...df], "Value of Stock in Transit").map(r => {
+    const info = getTransitInfo(r["Material"], r["Plant"]);
+    return {
+      ...r,
+      _purDoc:   info.purDoc,
+      _supPlant: info.supPlant,
+      _status: r["Value of Stock in Transit"] > 100000 ? "<span class='badge badge-red'>Critical</span>"
+             : r["Value of Stock in Transit"] > 50000  ? "<span class='badge badge-amber'>High</span>"
+             : r["Value of Stock in Transit"] > 10000  ? "<span class='badge badge-amber'>Medium</span>"
+             : "<span class='badge badge-green'>Low</span>",
+    };
+  });
   document.getElementById("transit-table-wrap").innerHTML = buildTable(transitRows, transitCols);
   document.getElementById("btn-dl-transit").onclick      = () => downloadCSV(transitRows,   transitCols.slice(0,-1), "transit_analysis.csv");
   document.getElementById("btn-dl-transit-xlsx").onclick = () => downloadExcel(transitRows, transitCols.slice(0,-1), "transit_analysis.xlsx");
@@ -1217,16 +1245,23 @@ function renderFlow() {
     {key:"Stock in Transit",          label:"In Transit",        fmt:fmtQty, rawKey:"Stock in Transit",          cellClass:"col-qty"},
     {key:"Stock in Quality Inspection",label:"In QC",           fmt:fmtQty, rawKey:"Stock in Quality Inspection",cellClass:"col-qty"},
     {key:"Value of Stock in Transit", label:"Transit Value (ETB)",fmt:fmtETB,rawKey:"Value of Stock in Transit", cellClass:"col-val"},
+    {key:"_purDoc",                   label:"Purchasing Document"},
+    {key:"_supPlant",                 label:"Supplying Plant"},
     {key:"_alert",                    label:"Alert", raw:true},
   ];
-  const reorderRows = reorderItems.map(r => ({
-    ...r,
-    _alert: r["Stock in Transit"] > 0 && r["Stock in Quality Inspection"] > 0
-      ? "<span class='badge badge-red'>Transit+QC</span>"
-      : r["Stock in Transit"] > 0
-      ? "<span class='badge badge-amber'>Awaiting Transit</span>"
-      : "<span class='badge badge-amber'>Awaiting QC Release</span>",
-  }));
+  const reorderRows = reorderItems.map(r => {
+    const info = getTransitInfo(r["Material"], r["Plant"]);
+    return {
+      ...r,
+      _purDoc:   info.purDoc,
+      _supPlant: info.supPlant,
+      _alert: r["Stock in Transit"] > 0 && r["Stock in Quality Inspection"] > 0
+        ? "<span class='badge badge-red'>Transit+QC</span>"
+        : r["Stock in Transit"] > 0
+        ? "<span class='badge badge-amber'>Awaiting Transit</span>"
+        : "<span class='badge badge-amber'>Awaiting QC Release</span>",
+    };
+  });
   document.getElementById("reorder-table-wrap").innerHTML = reorderRows.length
     ? buildTable(reorderRows, reorderCols, () => "row-amber")
     : `<div class="alert-info">✓ No reorder alerts — all materials have available unrestricted stock.</div>`;
@@ -1247,10 +1282,15 @@ function renderFlow() {
     {key:"Material",                  label:"Material"},
     {key:"Material Description",      label:"Description"},
     {key:"Plant Name",                label:"Receiving Plant"},
+    {key:"_purDoc",                   label:"Purchasing Document"},
+    {key:"_supPlant",                 label:"Supplying Plant"},
     {key:"Stock in Transit",          label:"Transit Qty",        fmt:fmtQty, rawKey:"Stock in Transit",          cellClass:"col-qty"},
     {key:"Value of Stock in Transit", label:"Transit Value (ETB)",fmt:fmtETB, rawKey:"Value of Stock in Transit", cellClass:"col-val"},
   ];
-  const transferRows = sortBy(df.filter(r => r["Stock in Transit"] > 0), "Value of Stock in Transit");
+  const transferRows = sortBy(df.filter(r => r["Stock in Transit"] > 0), "Value of Stock in Transit").map(r => {
+    const info = getTransitInfo(r["Material"], r["Plant"]);
+    return { ...r, _purDoc: info.purDoc, _supPlant: info.supPlant };
+  });
   document.getElementById("transfer-table-wrap").innerHTML = transferRows.length
     ? buildTable(transferRows, transferCols)
     : `<div class="alert-info">No inter-location transfers currently in progress.</div>`;
