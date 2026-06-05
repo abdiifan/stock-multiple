@@ -202,7 +202,9 @@ function loadFile(file) {
         clearError();
         hideLanding();
         populateAllFilters();
-        renderPage(currentPage);
+        // Re-render home KPIs then switch to dashboard
+        renderPage("home");
+        renderPage(currentPage === "home" ? "dashboard" : currentPage);
       } catch (err) {
         showError(`Could not read Excel file: ${err.message}`);
       }
@@ -1598,9 +1600,66 @@ function loadReconcileGroups() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// HOME PAGE
+// ═══════════════════════════════════════════════════════════════════════════
+function renderHome() {
+  // Module cards navigate to their respective page (only if data loaded)
+  document.querySelectorAll(".home-module-card[data-page]").forEach(card => {
+    card.onclick = () => {
+      const target = card.dataset.page;
+      if (!rawDf.length) {
+        // No file yet — briefly highlight the upload button
+        const uploadBtn = document.querySelector(".upload-btn");
+        if (uploadBtn) {
+          uploadBtn.style.borderColor = "var(--amber)";
+          uploadBtn.style.boxShadow   = "0 0 0 3px rgba(210,153,34,0.25)";
+          setTimeout(() => {
+            uploadBtn.style.borderColor = "";
+            uploadBtn.style.boxShadow   = "";
+          }, 1600);
+        }
+        return;
+      }
+      renderPage(target);
+    };
+  });
+
+  // Show summary KPIs if data is already loaded
+  const kpiRow = document.getElementById("home-kpis");
+  if (!rawDf.length) {
+    kpiRow.style.display = "none";
+    return;
+  }
+  kpiRow.style.display = "";
+
+  const base       = getReconciledBase();
+  const totalVal   = base.reduce((s,r) => s + r["Total Value"], 0);
+  const totalQty   = base.reduce((s,r) => s + r["Total Qty"],   0);
+  const transitVal = base.reduce((s,r) => s + r["Value of Stock in Transit"], 0);
+  const qcVal      = base.reduce((s,r) => s + r["Value of Stock in Quality Inspection"], 0);
+
+  const today      = new Date();
+  const in90       = new Date(); in90.setDate(in90.getDate() + 90);
+  const expiryCount = base.filter(r =>
+    r._expiry instanceof Date && !isNaN(r._expiry) &&
+    r._expiry >= today && r._expiry <= in90 &&
+    (r["Unrestricted Stock"] || 0) > 0
+  ).length;
+
+  setKpis("home-kpis", [
+    ["Total Inventory Value",    fmtETB(totalVal),   `${fmtQty(totalQty)} units across all plants`,      "blue"],
+    ["Stock in Transit",         fmtETB(transitVal), `Moving between locations`,                          "amber"],
+    ["In Quality Inspection",    fmtETB(qcVal),      `Pending QC release`,                               "red"],
+    ["Expiring within 90 Days",  expiryCount.toLocaleString() + " items", `Requiring urgent action`,     "purple"],
+    ["Unique Materials",         new Set(base.map(r=>r["Material"])).size.toLocaleString(), `Across ${new Set(base.map(r=>r["Plant"])).size} plants`, "green"],
+  ]);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // PAGE SWITCHING
 // ═══════════════════════════════════════════════════════════════════════════
 const PAGE_RENDERERS = {
+  home:      renderHome,
   dashboard: renderDashboard,
   transit:   renderTransit,
   expiry:    renderExpiry,
@@ -1611,8 +1670,11 @@ const PAGE_RENDERERS = {
 };
 
 function renderPage(id) {
-  if (!rawDf.length) return;
+  // Home page works even before a file is loaded
+  if (id !== "home" && !rawDf.length) return;
   currentPage = id;
+  // Hide the pre-data landing splash whenever any page is shown
+  document.getElementById("landingView").style.display = "none";
   document.querySelectorAll(".page").forEach(el => { el.style.display = "none"; });
   const pg = document.getElementById(`page-${id}`);
   if (pg) pg.style.display = "block";
@@ -1635,6 +1697,9 @@ function renderPage(id) {
 document.addEventListener("DOMContentLoaded", () => {
   // Load persisted reconcile groups before anything else
   loadReconcileGroups();
+
+  // Show Home page immediately (works without data)
+  renderPage("home");
 
   // Nav
   document.querySelectorAll(".nav-btn[data-page]").forEach(btn => {
