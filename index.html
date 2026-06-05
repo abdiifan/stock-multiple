@@ -113,6 +113,21 @@
 <!-- ═══════════════════════════ MAIN ═══════════════════════════ -->
 <main id="main">
 
+  <!-- ══ GLOBAL MATERIAL SEARCH BAR ══ -->
+  <div id="global-search-bar" style="display:none">
+    <div id="global-search-wrap">
+      <span id="global-search-icon">🔍</span>
+      <input id="global-search-input" type="text" placeholder="Search any material to see all…" autocomplete="off" />
+      <div id="global-search-tags">
+        <span class="gsb-tag gsb-tag-stock">In Stock</span>
+        <span class="gsb-tag gsb-tag-transit">In Transit</span>
+      </div>
+      <button id="global-search-btn">Search</button>
+      <button id="global-search-clear" class="gsb-clear">Clear</button>
+    </div>
+    <div id="global-search-results"></div>
+  </div>
+
   <div id="landingView">
     <div class="landing-logo"><img src="epss-logo.png" alt="EPSS Logo" /></div>
     <h1 class="landing-title">Stock-MultipleTrack Inventory Management Team</h1>
