@@ -78,6 +78,7 @@
 
   <nav id="nav">
     <div class="nav-label">NAVIGATION</div>
+    <button class="nav-btn" data-page="home">🏠 Home</button>
     <button class="nav-btn active" data-page="dashboard">📊 Dashboard</button>
     <button class="nav-btn" data-page="transit">🚚 Stock in Transit</button>
     <button class="nav-btn" data-page="expiry">⏰ Expiry Watchlist</button>
@@ -119,6 +120,81 @@
   </div>
 
   <div id="errorBanner" class="alert-danger" style="display:none"></div>
+
+  <!-- ── HOME ── -->
+  <section id="page-home" class="page" style="display:none">
+    <div class="home-hero">
+      <div class="home-hero-logo"><img src="epss-logo.png" alt="EPSS Logo" /></div>
+      <div class="home-hero-text">
+        <div class="home-hero-tag">EPSS · Stock-Multiple</div>
+        <h1 class="home-hero-title">Inventory Management<br/><span class="home-hero-accent">Command Center</span></h1>
+        <p class="home-hero-desc">Real-time pharmaceutical stock analytics across all plants and material groups. Upload your inventory Excel file to get started.</p>
+      </div>
+    </div>
+
+    <!-- Summary KPIs — populated by JS when data is loaded -->
+    <div id="home-kpis" class="kpi-row" style="display:none"></div>
+
+    <!-- Module cards grid -->
+    <div class="home-modules-label">MODULES</div>
+    <div class="home-modules">
+      <button class="home-module-card blue" data-page="dashboard">
+        <div class="hmc-icon">📊</div>
+        <div class="hmc-title">Dashboard</div>
+        <div class="hmc-desc">Aggregated KPIs, plant value breakdown, material group distribution, and near-expiry risk overview.</div>
+      </button>
+      <button class="home-module-card amber" data-page="transit">
+        <div class="hmc-icon">🚚</div>
+        <div class="hmc-title">Stock in Transit</div>
+        <div class="hmc-desc">Track all inventory currently moving between locations with full batch and valuation detail.</div>
+      </button>
+      <button class="home-module-card red" data-page="expiry">
+        <div class="hmc-icon">⏰</div>
+        <div class="hmc-title">Expiry Watchlist</div>
+        <div class="hmc-desc">Timeline of upcoming expirations by month with drill-down to individual batch level.</div>
+      </button>
+      <button class="home-module-card purple" data-page="qc">
+        <div class="hmc-icon">🔬</div>
+        <div class="hmc-title">Quality Inspection</div>
+        <div class="hmc-desc">Stock held in QC/QA pending release — by plant, batch, and material group.</div>
+      </button>
+      <button class="home-module-card green" data-page="branch">
+        <div class="hmc-icon">🏢</div>
+        <div class="hmc-title">Branch Comparison</div>
+        <div class="hmc-desc">Side-by-side inventory comparison across all branches with material-level drill-down.</div>
+      </button>
+      <button class="home-module-card blue" data-page="flow">
+        <div class="hmc-icon">📦</div>
+        <div class="hmc-title">Inventory Flow</div>
+        <div class="hmc-desc">Reorder alerts, inter-location transfers, and inbound vs. available stock charts.</div>
+      </button>
+      <button class="home-module-card amber" data-page="preview">
+        <div class="hmc-icon">📋</div>
+        <div class="hmc-title">Data Preview</div>
+        <div class="hmc-desc">Explore the full filtered dataset with plant, material group, and code filters.</div>
+      </button>
+    </div>
+
+    <!-- Info strip -->
+    <div class="home-info-strip">
+      <div class="home-info-item">
+        <div class="home-info-icon">🇪🇹</div>
+        <div><div class="home-info-title">ETB Currency</div><div class="home-info-sub">All values in Ethiopian Birr</div></div>
+      </div>
+      <div class="home-info-item">
+        <div class="home-info-icon">🔗</div>
+        <div><div class="home-info-title">Code Reconciliation</div><div class="home-info-sub">UOM conversion between material codes</div></div>
+      </div>
+      <div class="home-info-item">
+        <div class="home-info-icon">🔒</div>
+        <div><div class="home-info-title">Local Processing</div><div class="home-info-sub">All data stays in your browser</div></div>
+      </div>
+      <div class="home-info-item">
+        <div class="home-info-icon">⚡</div>
+        <div><div class="home-info-title">PharmaTrack v2.0</div><div class="home-info-sub">Multi-plant · Multi-batch · Real-time</div></div>
+      </div>
+    </div>
+  </section>
 
   <!-- ── DASHBOARD ── -->
   <section id="page-dashboard" class="page" style="display:none">
