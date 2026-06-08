@@ -378,6 +378,87 @@ td.col-mat-desc-wrap { max-width: 280px; white-space: normal; line-height: 1.4; 
 .home-info-title { font-size: 0.78rem; font-weight: 600; color: var(--text); margin-bottom: 1px; }
 .home-info-sub   { font-size: 0.68rem; color: var(--muted); }
 
+/* ── MULTI-SELECT DROPDOWN ── */
+.ms-wrap {
+  position: relative;
+  display: inline-block;
+}
+.ms-btn {
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  padding: 0.3rem 0.65rem;
+  font-family: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 155px;
+  justify-content: space-between;
+  transition: border-color 0.15s, background 0.15s;
+}
+.ms-btn:hover { border-color: var(--blue); background: var(--surface2); }
+.ms-btn.ms-active { border-color: var(--blue); color: var(--blue); }
+.ms-arrow { font-size: 0.6rem; color: var(--dim); transition: transform 0.2s; }
+.ms-wrap.open .ms-arrow { transform: rotate(180deg); }
+.ms-dropdown {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 220px;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  z-index: 300;
+  padding: 0.4rem 0;
+}
+.ms-wrap.open .ms-dropdown { display: block; }
+.ms-search {
+  width: 100%;
+  background: var(--surface);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.75rem;
+  padding: 0.4rem 0.7rem;
+  outline: none;
+}
+.ms-search::placeholder { color: var(--dim); }
+.ms-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.7rem;
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: var(--text);
+  transition: background 0.1s;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ms-item:hover { background: rgba(88,166,255,0.08); }
+.ms-item input[type=checkbox] { accent-color: var(--blue); flex-shrink: 0; }
+.ms-count-badge {
+  display: inline-block;
+  background: var(--blue);
+  color: #000;
+  border-radius: 9px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  padding: 0 5px;
+  line-height: 1.5;
+  margin-left: 3px;
+}
+
 /* ── RESPONSIVE ── */
 @media (max-width: 900px) {
   #sidebar { width: 200px; }
