@@ -776,6 +776,12 @@ function getTransitInfo(material, plantCode) {
 // ═══════════════════════════════════════════════════════════════════════════
 // TRANSIT
 // ═══════════════════════════════════════════════════════════════════════════
+
+// Holds the full transit rows (pre-built) so the search filter can re-slice them.
+let _transitRowsCache = [];
+let _transitColsCache = [];
+let _ho01RowsCache    = [];
+
 function renderTransit() {
   const df = applyPageFilter("transit").filter(r => r["Stock in Transit"] > 0 && r["Value of Stock in Transit"] > 0);
 
@@ -787,14 +793,6 @@ function renderTransit() {
     ["Total Transit Quantity",     fmtQty(totalTQ), "Units in movement",  "blue"],
     ["Unique Materials in Transit",String(uniqMat), "Distinct SKUs",      "green"],
   ]);
-
-  if (!df.length) { document.getElementById("transit-table-wrap").innerHTML = `<div class="alert-info">ℹ️ No items are currently in transit.</div>`; return; }
-
-  const plantAgg = sortBy(groupBy(df, "Plant Name", [["val","Value of Stock in Transit"],["qty","Stock in Transit"]]), "val");
-  Plotly.newPlot("chart-transit-plant", [
-    {type:"bar",  name:"Value (ETB)", x:plantAgg.map(r=>r["Plant Name"]), y:plantAgg.map(r=>r.val), yaxis:"y",  marker:{color:"#d29922"}, hovertemplate:"<b>%{x}</b><br>ETB %{y:,.0f}<extra></extra>"},
-    {type:"scatter", mode:"lines+markers", name:"Qty", x:plantAgg.map(r=>r["Plant Name"]), y:plantAgg.map(r=>r.qty), yaxis:"y2", marker:{color:"#3fb950",size:8}, line:{color:"#3fb950"}, hovertemplate:"<b>%{x}</b><br>Qty: %{y:,.0f}<extra></extra>"},
-  ], pl({height:280,margin:{l:20,r:60,t:20,b:80},yaxis2:{overlaying:"y",side:"right",gridcolor:"transparent",tickfont:{color:"#3fb950"}}}), PLOTLY_CONFIG);
 
   const transitCols = [
     {key:"Material", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"},
@@ -819,11 +817,12 @@ function renderTransit() {
              : "<span class='badge badge-green'>Low</span>",
     };
   });
-  document.getElementById("transit-table-wrap").innerHTML = buildTable(transitRows, transitCols);
-  document.getElementById("btn-dl-transit").onclick      = () => downloadCSV(transitRows,   transitCols.slice(0,-1), "transit_analysis.csv");
-  document.getElementById("btn-dl-transit-xlsx").onclick = () => downloadExcel(transitRows, transitCols.slice(0,-1), "transit_analysis.xlsx");
 
-  // HO01 section
+  // Cache rows for search filtering
+  _transitRowsCache = transitRows;
+  _transitColsCache = transitCols;
+
+  // HO01 section — cache rows
   const allTransitDf = applyPageFilter("transit");
   const ho01 = allTransitDf
     .filter(r => r["Stock in Transit"] > 0 && r["Value of Stock in Transit"] > 0)
@@ -833,21 +832,94 @@ function renderTransit() {
       String(r["Plant Name"]).toUpperCase().includes("HEAD OFFICE") ||
       String(r["Plant Name"]).toUpperCase().includes("CENTRAL")
     );
-  if (ho01.length) {
-    setKpis("ho01-kpis", [
-      ["HO01 Transit Value", fmtETB(ho01.reduce((s,r) => s+r["Value of Stock in Transit"],0)), "From central hub", "amber"],
-      ["HO01 Transit Qty",   fmtQty(ho01.reduce((s,r) => s+r["Stock in Transit"],0)),          "Units in movement","blue"],
-      ["Unique SKUs",        String(new Set(ho01.map(r=>r["Material"])).size),                  "Distinct materials","green"],
-    ]);
-    document.getElementById("ho01-table-wrap").innerHTML = buildTable(sortBy([...ho01], "Value of Stock in Transit"), transitCols.slice(0,-1));
-    document.getElementById("btn-dl-ho01").onclick = () => downloadCSV(ho01, transitCols.slice(0,-1), "ho01_transit.csv");
+  _ho01RowsCache = ho01;
+
+  // Wire chart + download but hide tables until a search is entered
+  if (df.length) {
+    const plantAgg = sortBy(groupBy(df, "Plant Name", [["val","Value of Stock in Transit"],["qty","Stock in Transit"]]), "val");
+    Plotly.newPlot("chart-transit-plant", [
+      {type:"bar",  name:"Value (ETB)", x:plantAgg.map(r=>r["Plant Name"]), y:plantAgg.map(r=>r.val), yaxis:"y",  marker:{color:"#d29922"}, hovertemplate:"<b>%{x}</b><br>ETB %{y:,.0f}<extra></extra>"},
+      {type:"scatter", mode:"lines+markers", name:"Qty", x:plantAgg.map(r=>r["Plant Name"]), y:plantAgg.map(r=>r.qty), yaxis:"y2", marker:{color:"#3fb950",size:8}, line:{color:"#3fb950"}, hovertemplate:"<b>%{x}</b><br>Qty: %{y:,.0f}<extra></extra>"},
+    ], pl({height:280,margin:{l:20,r:60,t:20,b:80},yaxis2:{overlaying:"y",side:"right",gridcolor:"transparent",tickfont:{color:"#3fb950"}}}), PLOTLY_CONFIG);
   } else {
-    document.getElementById("ho01-kpis").innerHTML = `<div class="alert-info">No HO01 transit records found.</div>`;
-    document.getElementById("ho01-table-wrap").innerHTML = "";
+    document.getElementById("chart-transit-plant").innerHTML = "";
   }
+
+  document.getElementById("btn-dl-transit").onclick      = () => downloadCSV(_transitRowsCache,   transitCols.slice(0,-1), "transit_analysis.csv");
+  document.getElementById("btn-dl-transit-xlsx").onclick = () => downloadExcel(_transitRowsCache, transitCols.slice(0,-1), "transit_analysis.xlsx");
+
+  // Show prompt to search; hide data tables
+  document.getElementById("transit-table-wrap").innerHTML =
+    `<div class="alert-info">🔍 Use the search box above to find and display transit items.</div>`;
+  document.getElementById("ho01-kpis").innerHTML =
+    `<div class="alert-info" style="margin:0">Search above to view HO01 transit records.</div>`;
+  document.getElementById("ho01-table-wrap").innerHTML = "";
 
   // Render the separate Stock in Transit file section
   renderStockTransitSection();
+}
+
+// ── Transit material search — filters main transit table ──────────────────
+function renderTransitSearch() {
+  const query = (document.getElementById("transit-search-input").value || "").trim().toLowerCase();
+  const transitCols = _transitColsCache;
+
+  if (!query) {
+    // Clear back to prompt
+    document.getElementById("transit-search-results").innerHTML = "";
+    document.getElementById("transit-table-wrap").innerHTML =
+      `<div class="alert-info">🔍 Use the search box above to find and display transit items.</div>`;
+    // Reset HO01
+    document.getElementById("ho01-kpis").innerHTML =
+      `<div class="alert-info" style="margin:0">Search above to view HO01 transit records.</div>`;
+    document.getElementById("ho01-table-wrap").innerHTML = "";
+    return;
+  }
+
+  // Filter main transit rows
+  const filtered = _transitRowsCache.filter(r => {
+    const code = String(r["Material"] || "").toLowerCase();
+    const desc = String(r["Material Description"] || "").toLowerCase();
+    return code.includes(query) || desc.includes(query);
+  });
+
+  document.getElementById("transit-search-results").innerHTML =
+    `<div style="font-size:0.78rem;color:var(--muted);margin-bottom:0.4rem">
+      Found <b style="color:var(--text)">${filtered.length}</b> transit record(s) matching "<b style="color:var(--text)">${escHtml(query)}</b>"
+    </div>`;
+
+  document.getElementById("transit-table-wrap").innerHTML = filtered.length
+    ? buildTable(filtered, transitCols)
+    : `<div class="alert-info">No transit items match "<b>${escHtml(query)}</b>".</div>`;
+
+  // Filter HO01 section
+  const ho01Filtered = _ho01RowsCache.filter(r => {
+    const code = String(r["Material"] || "").toLowerCase();
+    const desc = String(r["Material Description"] || "").toLowerCase();
+    return code.includes(query) || desc.includes(query);
+  });
+
+  if (ho01Filtered.length) {
+    const transitColsNoStatus = transitCols.slice(0, -1);
+    setKpis("ho01-kpis", [
+      ["HO01 Transit Value", fmtETB(ho01Filtered.reduce((s,r) => s+r["Value of Stock in Transit"],0)), "From central hub", "amber"],
+      ["HO01 Transit Qty",   fmtQty(ho01Filtered.reduce((s,r) => s+r["Stock in Transit"],0)),          "Units in movement","blue"],
+      ["Unique SKUs",        String(new Set(ho01Filtered.map(r=>r["Material"])).size),                  "Distinct materials","green"],
+    ]);
+    document.getElementById("ho01-table-wrap").innerHTML =
+      buildTable(sortBy([...ho01Filtered], "Value of Stock in Transit"), transitColsNoStatus);
+    document.getElementById("btn-dl-ho01").onclick = () =>
+      downloadCSV(ho01Filtered, transitColsNoStatus, "ho01_transit.csv");
+  } else {
+    document.getElementById("ho01-kpis").innerHTML =
+      `<div class="alert-info">No HO01 transit records match "<b>${escHtml(query)}</b>".</div>`;
+    document.getElementById("ho01-table-wrap").innerHTML = "";
+  }
+}
+
+function clearTransitSearch() {
+  document.getElementById("transit-search-input").value = "";
+  renderTransitSearch();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -964,11 +1036,19 @@ function renderExpiry() {
   }
 }
 
-// ── MATERIAL EXPIRY LOOKUP ────────────────────────────────────────────────
+// ── MATERIAL EXPIRY LOOKUP — filters the main expiry table ───────────────
 function renderExpirySearch() {
   const query     = document.getElementById("expiry-search-input").value.trim().toLowerCase();
   const resultsEl = document.getElementById("expiry-search-results");
-  if (!query) { resultsEl.innerHTML = ""; return; }
+
+  if (!query) {
+    resultsEl.innerHTML = "";
+    // Hide main table and show prompt
+    document.getElementById("expiry-table-wrap").innerHTML =
+      `<div class="alert-info">🔍 Use the search box above to find and display expiry items.</div>`;
+    document.getElementById("expired-section").style.display = "none";
+    return;
+  }
   if (!rawDf.length) { resultsEl.innerHTML = `<div class="alert-info">No data loaded yet.</div>`; return; }
 
   const today  = new Date();
@@ -982,6 +1062,8 @@ function renderExpirySearch() {
 
   if (!matches.length) {
     resultsEl.innerHTML = `<div class="alert-info">No materials found matching "<b>${escHtml(query)}</b>".</div>`;
+    document.getElementById("expiry-table-wrap").innerHTML = "";
+    document.getElementById("expired-section").style.display = "none";
     return;
   }
 
@@ -1016,12 +1098,28 @@ function renderExpirySearch() {
     {key:"Unrestricted Stock",             label:"Avail Qty",   fmt:fmtQty, rawKey:"Unrestricted Stock",          cellClass:"col-qty"},
     {key:"Value of Unrestricted Stock",    label:"Value (ETB)", fmt:fmtETB, rawKey:"Value of Unrestricted Stock", cellClass:"col-val"},
   ];
-  resultsEl.innerHTML = summary + buildTable(sorted, cols, r => r._statusClass);
+
+  // Show summary in the lookup result area AND render the main table below
+  resultsEl.innerHTML = summary;
+  document.getElementById("expiry-table-wrap").innerHTML = buildTable(sorted, cols, r => r._statusClass);
+
+  // Also show the expired-items sub-section if any expired results exist
+  const expiredRows = sorted.filter(r => r._daysLeft < 0);
+  if (expiredRows.length) {
+    document.getElementById("expired-section").style.display = "block";
+    document.getElementById("expired-header").innerHTML = `🔴 Already Expired Items (${expiredRows.length})`;
+    document.getElementById("expired-table-wrap").innerHTML = buildTable(expiredRows, cols, r => r._statusClass);
+  } else {
+    document.getElementById("expired-section").style.display = "none";
+  }
 }
 
 function clearExpirySearch() {
   document.getElementById("expiry-search-input").value = "";
   document.getElementById("expiry-search-results").innerHTML = "";
+  document.getElementById("expiry-table-wrap").innerHTML =
+    `<div class="alert-info">🔍 Use the search box above to find and display expiry items.</div>`;
+  document.getElementById("expired-section").style.display = "none";
 }
 
 // ── MATERIAL QC LOOKUP ────────────────────────────────────────────────────
