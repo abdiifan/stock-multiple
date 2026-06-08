@@ -14,6 +14,9 @@
 </head>
 <body>
 
+<!-- UX FIX: Mobile navigation toggle (hidden on desktop via CSS) -->
+<button id="mobile-nav-toggle" aria-label="Open navigation menu">☰</button>
+<div id="mobile-nav-backdrop"></div>
 <!-- ═══════════════ MATERIAL CODE RECONCILIATION SIDEBAR ═══════════════ -->
 <div id="reconcile-overlay" class="overlay" style="display:none"></div>
 <aside id="reconcile-panel" class="reconcile-panel" style="display:none">
@@ -474,11 +477,13 @@
       </div>
       <div class="filter-group">
         <label>Material Group Name</label>
-        <select id="filter-mgname" multiple size="4"></select>
+        <!-- FIX B7: filter-mg now correctly filters by Material Group Name (description) -->
+        <select id="filter-mg" multiple size="4"></select>
       </div>
       <div class="filter-group">
         <label>Material Group Code</label>
-        <select id="filter-mg" multiple size="4"></select>
+        <!-- FIX B7: filter-mgname now filters the SAP numeric group code (distinct field) -->
+        <select id="filter-mgname" multiple size="4"></select>
       </div>
       <button class="apply-btn" id="btn-apply-filter">Apply Filters</button>
       <button class="apply-btn secondary" id="btn-clear-filter">Clear</button>
