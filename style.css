@@ -62,8 +62,10 @@ body { display: flex; }
 .upload-btn input { display: none; }
 
 #fileStatus { font-size: 0.7rem; margin-top: 0.5rem; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 0.7rem; display: none; }
-#fileStatus .status-ok  { color: var(--green); font-weight: 600; font-size: 0.68rem; }
+#fileStatus .status-ok   { color: var(--green); font-weight: 600; font-size: 0.68rem; }
 #fileStatus .status-name { color: var(--muted); margin-top: 2px; }
+/* UX FIX: show when this snapshot was loaded */
+#fileStatus .status-time { color: var(--dim); font-size: 0.62rem; margin-top: 2px; }
 .sidebar-footer { margin-top: auto; padding-top: 1.5rem; font-size: 0.62rem; color: var(--border2); text-align: center; }
 
 /* ── LANDING ── */
@@ -130,6 +132,8 @@ thead th {
   background: var(--surface2); color: var(--muted); font-weight: 600; font-size: 0.68rem;
   text-transform: uppercase; letter-spacing: 0.06em; padding: 0.6rem 0.8rem;
   text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap;
+  /* UX FIX: sticky header so columns remain visible when scrolling long tables */
+  position: sticky; top: 0; z-index: 1;
 }
 tbody tr { border-bottom: 1px solid var(--border); transition: background 0.1s; }
 tbody tr:last-child { border-bottom: none; }
@@ -150,10 +154,14 @@ tbody tr.row-blue   { background: rgba(88,166,255,0.08); }
 .dl-btn:hover { background: var(--border2); border-color: var(--blue); }
 
 .apply-btn {
-  background: var(--blue); color: #000; border: none; border-radius: 8px;
+  background: var(--blue); color: var(--bg); border: none; border-radius: 8px;
   padding: 0.45rem 1rem; font-family: inherit; font-size: 0.78rem; font-weight: 600; cursor: pointer; transition: opacity 0.15s;
 }
 .apply-btn:hover { opacity: 0.85; }
+/* Accessibility: visible focus ring for keyboard users */
+.apply-btn:focus-visible, .dl-btn:focus-visible, .nav-btn:focus-visible {
+  outline: 2px solid var(--blue); outline-offset: 2px;
+}
 .apply-btn.secondary { background: var(--surface2); color: var(--muted); border: 1px solid var(--border2); }
 .apply-btn.small { padding: 0.3rem 0.75rem; font-size: 0.74rem; }
 .icon-btn { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 1rem; padding: 0.3rem; border-radius: 4px; }
@@ -339,8 +347,50 @@ tbody tr.row-blue   { background: rgba(88,166,255,0.08); }
   .chart-row { grid-template-columns: 1fr; }
 }
 @media (max-width: 640px) {
-  #sidebar { display: none; }
-  #main    { margin-left: 0; }
+  /* UX FIX: Don't hide sidebar — convert to slide-in drawer with hamburger button */
+  #sidebar {
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    z-index: 300;
+    width: 240px;
+  }
+  #sidebar.mobile-open {
+    transform: translateX(0);
+  }
+  #main { margin-left: 0; padding: 1rem; }
+  /* Mobile hamburger button */
+  #mobile-nav-toggle {
+    display: flex;
+    position: fixed;
+    top: 0.75rem;
+    left: 0.75rem;
+    z-index: 400;
+    background: var(--surface2);
+    border: 1px solid var(--border2);
+    border-radius: 8px;
+    padding: 0.45rem 0.6rem;
+    cursor: pointer;
+    color: var(--text);
+    font-size: 1.1rem;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+  }
+  /* Backdrop for mobile nav */
+  #mobile-nav-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 299;
+  }
+  #mobile-nav-backdrop.visible { display: block; }
+  /* Push top-bar down so hamburger doesn't overlap content */
+  #main { padding-top: 3.5rem; }
+}
+@media (min-width: 641px) {
+  #mobile-nav-toggle { display: none; }
+  #mobile-nav-backdrop { display: none !important; }
 }
 
 /* Transit file upload button */
