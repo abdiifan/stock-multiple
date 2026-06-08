@@ -321,6 +321,10 @@ function buildMultiSelect(wrapId, ddId, items, placeholder) {
     if (checked.length === 0) {
       btn.innerHTML = `${escHtml(placeholder)} <span class="ms-arrow">▾</span>`;
       btn.classList.remove("ms-active");
+    } else if (checked.length <= 2) {
+      const names = checked.map(v => escHtml(v)).join(", ");
+      btn.innerHTML = `<span class="ms-selected-names" title="${escHtml(checked.join(', '))}">${names}</span> <span class="ms-count-badge">${checked.length}</span> <span class="ms-arrow">▾</span>`;
+      btn.classList.add("ms-active");
     } else {
       const badgeHtml = `<span class="ms-count-badge">${checked.length}</span>`;
       btn.innerHTML = `${escHtml(placeholder)} ${badgeHtml} <span class="ms-arrow">▾</span>`;
