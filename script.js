@@ -87,27 +87,27 @@ let reconcileGroups = [];
 // ── RECONCILIATION CACHE (PERF-1) ─────────────────────────────────────────
 // Cache the reconciled base so repeated page renders don't re-run the full
 // merge loop. Invalidated when rawDf or reconcileGroups changes.
-// FIX B4: Use a monotonically-incrementing version counter instead of length
-// comparisons.  Length is insufficient when rows are mutated in-place (e.g.
-// a future feature edits rawDf without changing its length).  Calling
-// invalidateReconCache() bumps the counter; getReconciledBase() only accepts
-// the cache when the stored version matches the current counter.
 let _reconCache        = null;
-let _reconCacheVersion = -1;
-let _reconVersion      = 0;   // bumped on every invalidation
+let _reconCacheRawLen  = -1;
+let _reconCacheGrpLen  = -1;
 
 function invalidateReconCache() {
-  _reconCache        = null;
-  _reconCacheVersion = -1;
-  _reconVersion++;
+  _reconCache       = null;
+  _reconCacheRawLen = -1;
+  _reconCacheGrpLen = -1;
 }
 
 function getReconciledBase() {
-  if (_reconCache !== null && _reconCacheVersion === _reconVersion) {
+  if (
+    _reconCache !== null &&
+    _reconCacheRawLen === rawDf.length &&
+    _reconCacheGrpLen === reconcileGroups.length
+  ) {
     return _reconCache;
   }
-  _reconCache        = applyReconciliationToData(rawDf);
-  _reconCacheVersion = _reconVersion;
+  _reconCache       = applyReconciliationToData(rawDf);
+  _reconCacheRawLen = rawDf.length;
+  _reconCacheGrpLen = reconcileGroups.length;
   return _reconCache;
 }
 
@@ -265,9 +265,7 @@ function clearError() { document.getElementById("errorBanner").style.display = "
 function showSuccess(name, n) {
   const el = document.getElementById("fileStatus");
   el.style.display = "block";
-  // UX FIX: show timestamp so staff know which data snapshot they're viewing
-  const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  el.innerHTML = `<div class="status-ok">✓ FILE LOADED</div><div class="status-name">${escHtml(name)} (${n.toLocaleString()} records)</div><div class="status-time">Loaded at ${now}</div>`;
+  el.innerHTML = `<div class="status-ok">✓ FILE LOADED</div><div class="status-name">${escHtml(name)} (${n.toLocaleString()} records)</div>`;
   document.getElementById("uploadBtnText").textContent = "📂 Change File";
 }
 function hideLanding() { document.getElementById("landingView").style.display = "none"; }
@@ -385,8 +383,7 @@ function renderDashboard() {
   Plotly.newPlot("chart-plant-val", [
     { type:"bar", name:"Value (ETB)", x:plantAgg.map(r=>r["Plant Name"]), y:plantAgg.map(r=>r.val), yaxis:"y", marker:{color:"#58a6ff"}, hovertemplate:"<b>%{x}</b><br>ETB %{y:,.0f}<extra></extra>" },
     { type:"scatter", mode:"lines+markers", name:"Quantity", x:plantAgg.map(r=>r["Plant Name"]), y:plantAgg.map(r=>r.qty), yaxis:"y2", marker:{color:"#3fb950",size:8}, line:{color:"#3fb950"}, hovertemplate:"<b>%{x}</b><br>Qty: %{y:,.0f}<extra></extra>" },
-  // DESIGN FIX: tickangle -30 prevents long plant names being clipped/unreadable
-  ], pl({ height:300, margin:{l:20,r:60,t:20,b:110}, xaxis:{tickangle:-30}, yaxis2:{overlaying:"y",side:"right",gridcolor:"transparent",tickfont:{color:"#3fb950"},title:{text:"Qty",font:{color:"#3fb950"}}}, barmode:"group" }), PLOTLY_CONFIG);
+  ], pl({ height:280, margin:{l:20,r:60,t:20,b:80}, yaxis2:{overlaying:"y",side:"right",gridcolor:"transparent",tickfont:{color:"#3fb950"},title:{text:"Qty",font:{color:"#3fb950"}}}, barmode:"group" }), PLOTLY_CONFIG);
 
   // Material Group pie (by value)
   const mgAgg = sortBy(groupBy(df, "Material Group Name", [["val","Total Value"]]), "val").slice(0, 12);
@@ -412,7 +409,7 @@ function renderDashboard() {
     Plotly.newPlot("chart-mg-bar", [
       { type:"bar", name:"Value at Risk (ETB)", x:nearByPlant.map(r=>r["Plant Name"]), y:nearByPlant.map(r=>r.val), yaxis:"y",  marker:{color:"#d29922"}, hovertemplate:"<b>%{x}</b><br>ETB %{y:,.0f}<extra></extra>" },
       { type:"scatter", mode:"lines+markers", name:"Qty at Risk", x:nearByPlant.map(r=>r["Plant Name"]), y:nearByPlant.map(r=>r.qty), yaxis:"y2", marker:{color:"#f85149",size:8}, line:{color:"#f85149"}, hovertemplate:"<b>%{x}</b><br>Qty: %{y:,.0f}<extra></extra>" },
-    ], pl({ height:420, margin:{l:20,r:60,t:20,b:120}, xaxis:{tickangle:-30}, barmode:"group",
+    ], pl({ height:420, margin:{l:20,r:60,t:20,b:100}, barmode:"group",
       yaxis2:{overlaying:"y",side:"right",gridcolor:"transparent",tickfont:{color:"#f85149"},title:{text:"Qty",font:{color:"#f85149"}}}
     }), PLOTLY_CONFIG);
   } else {
@@ -620,7 +617,7 @@ function renderTransit() {
   Plotly.newPlot("chart-transit-plant", [
     {type:"bar",  name:"Value (ETB)", x:plantAgg.map(r=>r["Plant Name"]), y:plantAgg.map(r=>r.val), yaxis:"y",  marker:{color:"#d29922"}, hovertemplate:"<b>%{x}</b><br>ETB %{y:,.0f}<extra></extra>"},
     {type:"scatter", mode:"lines+markers", name:"Qty", x:plantAgg.map(r=>r["Plant Name"]), y:plantAgg.map(r=>r.qty), yaxis:"y2", marker:{color:"#3fb950",size:8}, line:{color:"#3fb950"}, hovertemplate:"<b>%{x}</b><br>Qty: %{y:,.0f}<extra></extra>"},
-  ], pl({height:300,margin:{l:20,r:60,t:20,b:110},xaxis:{tickangle:-30},yaxis2:{overlaying:"y",side:"right",gridcolor:"transparent",tickfont:{color:"#3fb950"}}}), PLOTLY_CONFIG);
+  ], pl({height:280,margin:{l:20,r:60,t:20,b:80},yaxis2:{overlaying:"y",side:"right",gridcolor:"transparent",tickfont:{color:"#3fb950"}}}), PLOTLY_CONFIG);
 
   const transitCols = [
     {key:"Material",                  label:"Material"},
@@ -639,22 +636,11 @@ function renderTransit() {
       ...r,
       _purDoc:   info.purDoc,
       _supPlant: info.supPlant,
+      _status: r["Value of Stock in Transit"] > 100000 ? "<span class='badge badge-red'>Critical</span>"
+             : r["Value of Stock in Transit"] > 50000  ? "<span class='badge badge-amber'>High</span>"
+             : r["Value of Stock in Transit"] > 10000  ? "<span class='badge badge-amber'>Medium</span>"
+             : "<span class='badge badge-green'>Low</span>",
     };
-  });
-  // FIX B6: compute dataset-relative thresholds so badges are meaningful regardless
-  // of currency scale or dataset size.  75th percentile = "High", 90th = "Critical".
-  // Also considers quantity so low-value essential medicines aren't classified as Low.
-  const transitVals = transitRows.map(r => r["Value of Stock in Transit"]).sort((a,b) => a-b);
-  const p75val = transitVals[Math.floor(transitVals.length * 0.75)] || 50000;
-  const p90val = transitVals[Math.floor(transitVals.length * 0.90)] || 100000;
-  const transitQtys = transitRows.map(r => r["Stock in Transit"]).sort((a,b) => a-b);
-  const p75qty = transitQtys[Math.floor(transitQtys.length * 0.75)] || 1000;
-  transitRows.forEach(r => {
-    const v = r["Value of Stock in Transit"], q = r["Stock in Transit"];
-    r._status = (v >= p90val || q >= p75qty * 1.5) ? "<span class='badge badge-red'>Critical</span>"
-              : (v >= p75val || q >= p75qty)         ? "<span class='badge badge-amber'>High</span>"
-              : (v > 0)                               ? "<span class='badge badge-green'>Normal</span>"
-              :                                        "<span class='badge badge-green'>Low</span>";
   });
   document.getElementById("transit-table-wrap").innerHTML = buildTable(transitRows, transitCols);
   document.getElementById("btn-dl-transit").onclick      = () => downloadCSV(transitRows,   transitCols.slice(0,-1), "transit_analysis.csv");
@@ -703,23 +689,15 @@ function renderExpiry() {
   const expiring     = valid.filter(r => r._expiry >= today && r._expiry <= cutoff && (r["Unrestricted Stock"]||0) > 0 && (r["Value of Unrestricted Stock"]||0) > 0);
   const expired      = valid.filter(r => r._expiry < today);
   // FIX BUG-4: filter zero-qty BEFORE the KPI count so KPI matches the table
-  const expiredWithStock     = expired.filter(r => (r["Unrestricted Stock"] || 0) > 0);
-  const expiredZeroQty       = expired.length - expiredWithStock.length;
-  // DOMAIN FIX: also count expired QC + Blocked stock (compliance risk regardless of type)
-  const expiredQCStock       = expired.filter(r => (r["Stock in Quality Inspection"] || 0) > 0);
-  const expiredBlockedStock  = expired.filter(r => (r["Blocked Stock"] || 0) > 0);
+  const expiredWithStock = expired.filter(r => (r["Unrestricted Stock"] || 0) > 0);
+  const expiredZeroQty   = expired.length - expiredWithStock.length;
 
   setKpis("expiry-kpis", [
-    ["Expiring in Window",    String(expiring.length),          `Items within next ${months} months`,              "amber"],
+    ["Expiring in Window", String(expiring.length),       `Items within next ${months} months`,             "amber"],
     // FIX BUG-4: use expiredWithStock.length to match what the table shows
-    ["Already Expired",       String(expiredWithStock.length),  "Unrestricted stock — action required",            "red"],
-    // DOMAIN FIX: surface QC/Blocked expired items as separate compliance KPI
-    ["Expired in QC/Blocked", String(expiredQCStock.length + expiredBlockedStock.length),
-                                                                "Compliance risk — held but past expiry",          "red"],
-    ["At-Risk Value",         fmtETB(expiring.reduce((s,r) => s+r["Value of Unrestricted Stock"],0)),
-                                                                "Unrestricted stock value",                        "purple"],
-    ["At-Risk Quantity",      fmtQty(expiring.reduce((s,r) => s+r["Unrestricted Stock"],0)),
-                                                                "Units expiring soon",                             "amber"],
+    ["Already Expired",   String(expiredWithStock.length),"Items with stock on hand requiring action",      "red"],
+    ["At-Risk Value",     fmtETB(expiring.reduce((s,r) => s+r["Value of Unrestricted Stock"],0)),           "Unrestricted stock value","purple"],
+    ["At-Risk Quantity",  fmtQty(expiring.reduce((s,r) => s+r["Unrestricted Stock"],0)),                   "Units expiring soon",     "amber"],
   ]);
 
   if (expiring.length) {
@@ -730,18 +708,10 @@ function renderExpiry() {
       valMap[key]   = (valMap[key]   || 0) + r["Value of Unrestricted Stock"];
     });
     const ms = Object.keys(monthMap).sort();
-    // DESIGN FIX: color-code bars by urgency (0-3 months = red, 3-6 = amber, >6 = yellow)
-    const now6mo  = new Date(); now6mo.setMonth(now6mo.getMonth() + 3);
-    const now3mo  = new Date();
-    const barColors = ms.map(m => {
-      const [yr, mo] = m.split("-").map(Number);
-      const dt = new Date(yr, mo - 1, 1);
-      return dt <= now3mo ? "#f85149" : dt <= now6mo ? "#d29922" : "#e3b341";
-    });
     Plotly.newPlot("chart-expiry-timeline", [
-      {type:"bar",   name:"Items Count",   x:ms, y:ms.map(m=>monthMap[m]), marker:{color: barColors}, hovertemplate:"<b>%{x}</b><br>%{y} items<extra></extra>"},
-      {type:"scatter",mode:"lines+markers",name:"Value at Risk", x:ms, y:ms.map(m=>valMap[m]), yaxis:"y2", marker:{color:"#a371f7",size:8}, line:{color:"#a371f7"}, hovertemplate:"<b>%{x}</b><br>ETB %{y:,.0f}<extra></extra>"},
-    ], pl({height:260,margin:{l:20,r:60,t:20,b:60},yaxis2:{overlaying:"y",side:"right",gridcolor:"transparent",tickfont:{color:"#a371f7"}}}), PLOTLY_CONFIG);
+      {type:"bar",   name:"Items Count",   x:ms, y:ms.map(m=>monthMap[m]), marker:{color:"#d29922"}, hovertemplate:"<b>%{x}</b><br>%{y} items<extra></extra>"},
+      {type:"scatter",mode:"lines+markers",name:"Value at Risk", x:ms, y:ms.map(m=>valMap[m]), yaxis:"y2", marker:{color:"#f85149",size:8}, line:{color:"#f85149"}, hovertemplate:"<b>%{x}</b><br>ETB %{y:,.0f}<extra></extra>"},
+    ], pl({height:260,margin:{l:20,r:60,t:20,b:60},yaxis2:{overlaying:"y",side:"right",gridcolor:"transparent",tickfont:{color:"#f85149"}}}), PLOTLY_CONFIG);
 
     document.getElementById("chart-expiry-timeline").on("plotly_click", function(data) {
       const pt = data.points[0];
@@ -754,8 +724,6 @@ function renderExpiry() {
         {key:"Material Group Name",         label:"Material Group"},
         {key:"Plant Name",                  label:"Plant"},
         {key:"Description of Storage Location", label:"Storage Location"},
-        // DOMAIN FIX: Batch column in drilldown for traceability
-        {key:"Batch",                       label:"Batch"},
         {key:"_expiryStr",                  label:"Expiry Date"},
         {key:"Unrestricted Stock",          label:"Qty",        fmt:fmtQty, rawKey:"Unrestricted Stock",       cellClass:"col-qty"},
         {key:"Value of Unrestricted Stock", label:"Value (ETB)",fmt:fmtETB, rawKey:"Value of Unrestricted Stock",cellClass:"col-val"},
@@ -798,7 +766,7 @@ function renderExpiry() {
     const zeroNote = expiredZeroQty
       ? ` <span style="font-size:0.72rem;color:var(--muted);font-weight:400">(${expiredZeroQty} zero-qty records hidden)</span>`
       : "";
-    document.getElementById("expired-header").innerHTML = `🔴 Already Expired — Unrestricted Stock (${expiredWithStock.length})${zeroNote}`;
+    document.getElementById("expired-header").innerHTML = `🔴 Already Expired Items (${expiredWithStock.length})${zeroNote}`;
     const expiredRows = expiredWithStock.map(r => ({...r, _expiryStr: r._expiry ? r._expiry.toISOString().slice(0,10) : ""}));
     document.getElementById("expired-table-wrap").innerHTML = buildTable(expiredRows, [
       {key:"Material",                       label:"Material"},
@@ -806,38 +774,14 @@ function renderExpiry() {
       {key:"Material Group Name",            label:"Material Group"},
       {key:"Plant Name",                     label:"Plant"},
       {key:"Description of Storage Location",label:"Storage Location"},
-      // DOMAIN FIX: Batch column for traceability
-      {key:"Batch",                          label:"Batch"},
       {key:"_expiryStr",                     label:"Expiry Date"},
       {key:"Unrestricted Stock",             label:"Qty", fmt:fmtQty, rawKey:"Unrestricted Stock", cellClass:"col-qty"},
-    ], () => "row-red");
-
-    // DOMAIN FIX: Show expired QC/Blocked stock section
-    const expiredOtherRows = [
-      ...expiredQCStock.map(r => ({...r, _expiryStr: r._expiry ? r._expiry.toISOString().slice(0,10) : "", _stockType: "QC"})),
-      ...expiredBlockedStock.map(r => ({...r, _expiryStr: r._expiry ? r._expiry.toISOString().slice(0,10) : "", _stockType: "Blocked"})),
-    ].filter(r => !expiredWithStock.some(e => e === r)); // deduplicate
-    if (expiredOtherRows.length) {
-      document.getElementById("expired-table-wrap").innerHTML += `
-        <div class="section-header" style="margin-top:1.2rem;color:var(--red)">⚠️ Expired QC &amp; Blocked Stock — Compliance Risk (${expiredOtherRows.length})</div>
-        ${buildTable(expiredOtherRows, [
-          {key:"Material",                       label:"Material"},
-          {key:"Material Description",           label:"Description"},
-          {key:"Plant Name",                     label:"Plant"},
-          {key:"Batch",                          label:"Batch"},
-          {key:"_expiryStr",                     label:"Expiry Date"},
-          {key:"_stockType",                     label:"Stock Type"},
-          {key:"Stock in Quality Inspection",    label:"QC Qty",      fmt:fmtQty, rawKey:"Stock in Quality Inspection", cellClass:"col-qty"},
-          {key:"Blocked Stock",                  label:"Blocked Qty",  fmt:fmtQty, rawKey:"Blocked Stock",              cellClass:"col-qty"},
-        ], () => "row-amber")}`;
-    }
-
+    ]);
     document.getElementById("btn-dl-expired").onclick = () => downloadCSV(expiredRows, [
       {key:"Material",                       label:"Material"},
       {key:"Material Description",           label:"Description"},
       {key:"Plant Name",                     label:"Plant"},
       {key:"Description of Storage Location",label:"Storage Location"},
-      {key:"Batch",                          label:"Batch"},
       {key:"_expiryStr",                     label:"Expiry Date"},
       {key:"Unrestricted Stock",             label:"Qty", rawKey:"Unrestricted Stock"},
     ], "expired_items.csv");
@@ -992,7 +936,7 @@ function renderQC() {
   Plotly.newPlot("chart-qc-plant", [
     {type:"bar",     name:"Value (ETB)", x:plantQC.map(r=>r["Plant Name"]), y:plantQC.map(r=>r.val), yaxis:"y",  marker:{color:"#f85149"}, hovertemplate:"<b>%{x}</b><br>ETB %{y:,.0f}<extra></extra>"},
     {type:"scatter", mode:"lines+markers", name:"Qty", x:plantQC.map(r=>r["Plant Name"]), y:plantQC.map(r=>r.qty), yaxis:"y2", marker:{color:"#3fb950",size:8}, line:{color:"#3fb950"}, hovertemplate:"<b>%{x}</b><br>Qty: %{y:,.0f}<extra></extra>"},
-  ], pl({height:300,margin:{l:20,r:60,t:20,b:110},xaxis:{tickangle:-30},yaxis2:{overlaying:"y",side:"right",gridcolor:"transparent",tickfont:{color:"#3fb950"}}}), PLOTLY_CONFIG);
+  ], pl({height:280,margin:{l:20,r:60,t:20,b:80},yaxis2:{overlaying:"y",side:"right",gridcolor:"transparent",tickfont:{color:"#3fb950"}}}), PLOTLY_CONFIG);
 
   const qcCols = [
     {key:"Material",                             label:"Material"},
@@ -1000,8 +944,6 @@ function renderQC() {
     {key:"Material Group Name",                  label:"Material Group"},
     {key:"Plant Name",                           label:"Plant"},
     {key:"Description of Storage Location",      label:"Storage Location"},
-    // DOMAIN FIX: Batch column for traceability in QC (needed for GMP audits)
-    {key:"Batch",                                label:"Batch"},
     {key:"_expiryStr",                           label:"Shelf Life Expiry"},
     {key:"Stock in Quality Inspection",          label:"QC Qty",        fmt:fmtQty, rawKey:"Stock in Quality Inspection",          cellClass:"col-qty"},
     {key:"Value of Stock in Quality Inspection", label:"QC Value (ETB)",fmt:fmtETB, rawKey:"Value of Stock in Quality Inspection", cellClass:"col-val"},
@@ -1401,26 +1343,21 @@ function populatePreviewFilters() {
       .sort();
     sel.innerHTML = vals.map(v => `<option value="${escHtml(v)}">${escHtml(v)}</option>`).join("");
   }
-  fill("filter-plant",  "Plant Name",          null);
-  fill("filter-mg",     "Material Group Name",  isNonMedicalGroup);
-  // FIX B7: filter-mgname was filtering the same field as filter-mg (Material Group Name),
-  // so their AND-logic would over-filter to the intersection of two identical lists.
-  // Map filter-mgname to "Material Group" (the numeric SAP code) instead, which is
-  // genuinely distinct from the description column and adds real filtering value.
-  fill("filter-mgname", "Material Group",       null);
+  fill("filter-plant",  "Plant Name",         null);
+  fill("filter-mg",     "Material Group Name", isNonMedicalGroup);
+  fill("filter-mgname", "Material Group Name", isNonMedicalGroup);
 }
 
 function applyPreviewFilters() {
   const baseDf     = getReconciledBase();
   const getSelected = id => [...document.querySelectorAll(`#${id} option:checked`)].map(o => o.value);
   const plants      = getSelected("filter-plant");
-  const mgnames     = getSelected("filter-mg");       // Material Group Name
-  // FIX B7: now filters on Material Group (code), not a duplicate of Material Group Name
-  const mgcodes     = getSelected("filter-mgname");   // Material Group Code
+  const mgs         = getSelected("filter-mg");
+  const mgnames     = getSelected("filter-mgname");
   filtDf = baseDf.filter(r =>
     (!plants.length  || plants.includes(r["Plant Name"])) &&
-    (!mgnames.length || mgnames.includes(r["Material Group Name"])) &&
-    (!mgcodes.length || mgcodes.includes(r["Material Group"]))
+    (!mgs.length     || mgs.includes(r["Material Group Name"])) &&
+    (!mgnames.length || mgnames.includes(r["Material Group Name"]))
   );
   renderPreviewTable();
 }
@@ -1515,9 +1452,7 @@ function applyReconciliationToData(df) {
   ];
 
   const merged  = [];
-  // FIX B2: use null-byte (\x00) separator — cannot appear in Excel string cells,
-  // so it eliminates false collisions when field values contain "||".
-  const mergeKey = r => `${r["Material"]}\x00${r["Plant"]}\x00${r["Storage Location"]}\x00${r["Batch"] || ""}`;
+  const mergeKey = r => `${r["Material"]}||${r["Plant"]}||${r["Storage Location"]}||${r["Batch"] || ""}`;
   const keyMap  = {};
 
   df.forEach(row => {
@@ -2041,12 +1976,6 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("open-reconcile-btn").addEventListener("click", openReconcilePanel);
   document.getElementById("reconcile-close").addEventListener("click", closeReconcilePanel);
   document.getElementById("reconcile-overlay").addEventListener("click", closeReconcilePanel);
-  // UX FIX: Escape key closes the reconciliation panel (keyboard accessibility)
-  document.addEventListener("keydown", e => {
-    if (e.key === "Escape" && document.getElementById("reconcile-panel").style.display !== "none") {
-      closeReconcilePanel();
-    }
-  });
 
   // Mapping file upload
   document.getElementById("rp-file-input").addEventListener("change", e => {
@@ -2078,31 +2007,6 @@ document.addEventListener("DOMContentLoaded", () => {
       if (rawDf.length) renderPage(currentPage);
     }
   });
-
-  // UX FIX: Mobile nav hamburger wiring
-  const mobileToggle   = document.getElementById("mobile-nav-toggle");
-  const mobileBackdrop = document.getElementById("mobile-nav-backdrop");
-  const sidebar        = document.getElementById("sidebar");
-  function openMobileNav() {
-    sidebar.classList.add("mobile-open");
-    mobileBackdrop.classList.add("visible");
-    mobileToggle.setAttribute("aria-expanded", "true");
-  }
-  function closeMobileNav() {
-    sidebar.classList.remove("mobile-open");
-    mobileBackdrop.classList.remove("visible");
-    mobileToggle.setAttribute("aria-expanded", "false");
-  }
-  if (mobileToggle) mobileToggle.addEventListener("click", openMobileNav);
-  if (mobileBackdrop) mobileBackdrop.addEventListener("click", closeMobileNav);
-  // Close mobile nav when a nav item is tapped
-  document.querySelectorAll(".nav-btn[data-page]").forEach(btn => {
-    btn.addEventListener("click", closeMobileNav);
-  });
-  // Also close on Escape
-  document.addEventListener("keydown", e => {
-    if (e.key === "Escape") closeMobileNav();
-  });
 });
 
 // ── GLOBAL MATERIAL SEARCH ─────────────────────────────────────────────────
@@ -2112,21 +2016,17 @@ document.addEventListener("DOMContentLoaded", () => {
     return (+n).toLocaleString(undefined, { maximumFractionDigits: 2 });
   }
 
-  // FIX B1: Renamed from buildTable → gsr_buildTable to avoid shadowing the outer
-  // buildTable (which has a different arg order).  All cell values are now passed
-  // through escHtml() to prevent XSS from malicious Excel content.
-  function gsr_buildTable(cols, rows) {
+  function buildTable(cols, rows) {
     if (!rows.length) return '<p class="gsr-no-data">No matching records found.</p>';
     let html = '<div class="tbl-wrap"><table><thead><tr>';
-    cols.forEach(c => { html += `<th>${escHtml(c.label)}</th>`; });
+    cols.forEach(c => { html += `<th>${c.label}</th>`; });
     html += "</tr></thead><tbody>";
     rows.slice(0, 200).forEach(r => {
       html += "<tr>";
       cols.forEach(c => {
         const v = r[c.key] ?? "—";
-        const cls = c.cls ? ` class="${escHtml(c.cls)}"` : "";
-        // FIX B1: escape all cell values — Excel data must never reach innerHTML raw
-        html += `<td${cls}>${escHtml(String(v))}</td>`;
+        const cls = c.cls ? ` class="${c.cls}"` : "";
+        html += `<td${cls}>${v}</td>`;
       });
       html += "</tr>";
     });
@@ -2137,10 +2037,17 @@ document.addEventListener("DOMContentLoaded", () => {
     return html;
   }
 
+  function showResultsPanel() {
+    document.getElementById("global-search-results-panel").style.display = "block";
+  }
+  function hideResultsPanel() {
+    document.getElementById("global-search-results-panel").style.display = "none";
+  }
+
   function runSearch() {
     const q = (document.getElementById("global-search-input").value || "").trim().toLowerCase();
     const out = document.getElementById("global-search-results");
-    if (!q) { out.innerHTML = ""; return; }
+    if (!q) { out.innerHTML = ""; hideResultsPanel(); return; }
 
     // ── In-Stock results ──
     const base = rawDf;
@@ -2191,7 +2098,7 @@ document.addEventListener("DOMContentLoaded", () => {
       <span class="gsr-badge gsr-badge-stock">In Stock</span>
       ${stockRows.length} record${stockRows.length !== 1 ? "s" : ""} found
     </div>`;
-    html += gsr_buildTable(stockCols, stockRows);
+    html += buildTable(stockCols, stockRows);
 
     // Transit from separate file (if uploaded)
     if (stockTransitRaw.length > 0) {
@@ -2199,7 +2106,7 @@ document.addEventListener("DOMContentLoaded", () => {
         <span class="gsr-badge gsr-badge-transit">In Transit (Transit File)</span>
         ${transitRows.length} record${transitRows.length !== 1 ? "s" : ""} found
       </div>`;
-      html += gsr_buildTable(transitCols, transitRows);
+      html += buildTable(transitCols, transitRows);
     } else if (inTransitMain.length > 0) {
       // Fallback: show in-transit column from main data
       html += `<div class="gsr-section-title" style="margin-top:1.2rem">
@@ -2213,15 +2120,17 @@ document.addEventListener("DOMContentLoaded", () => {
         { key: "Stock in Transit",     label: "Transit Qty", cls: "col-qty" },
         { key: "Value of Stock in Transit", label: "Transit Value (ETB)", cls: "col-val" },
       ];
-      html += gsr_buildTable(tCols, inTransitMain);
+      html += buildTable(tCols, inTransitMain);
     }
 
     out.innerHTML = html;
+    showResultsPanel();
   }
 
   function clearSearch() {
     document.getElementById("global-search-input").value = "";
     document.getElementById("global-search-results").innerHTML = "";
+    hideResultsPanel();
   }
 
   document.addEventListener("DOMContentLoaded", () => {
@@ -2230,5 +2139,6 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("global-search-input").addEventListener("keydown", e => {
       if (e.key === "Enter") runSearch();
     });
+    document.getElementById("global-search-results-close").addEventListener("click", hideResultsPanel);
   });
 })();
