@@ -787,7 +787,13 @@ let _transitColsCache = [];
 let _ho01RowsCache    = [];
 
 function renderTransit() {
-  const df = applyPageFilter("transit").filter(r => r["Stock in Transit"] > 0 && r["Value of Stock in Transit"] > 0);
+  // Apply non-medical exclusion filters before rendering
+  const df = applyPageFilter("transit").filter(r =>
+    r["Stock in Transit"] > 0 &&
+    r["Value of Stock in Transit"] > 0 &&
+    !isNonMedicalCode(r["Material"]) &&
+    !isNonMedicalGroup(r["Material Group Name"])
+  );
 
   const totalTV = df.reduce((s,r) => s + r["Value of Stock in Transit"], 0);
   const totalTQ = df.reduce((s,r) => s + r["Stock in Transit"], 0);
@@ -826,19 +832,7 @@ function renderTransit() {
   _transitRowsCache = transitRows;
   _transitColsCache = transitCols;
 
-  // HO01 section — cache rows
-  const allTransitDf = applyPageFilter("transit");
-  const ho01 = allTransitDf
-    .filter(r => r["Stock in Transit"] > 0 && r["Value of Stock in Transit"] > 0)
-    .filter(r =>
-      String(r["Plant"]).toUpperCase() === "HO01" ||
-      String(r["Plant Name"]).toUpperCase().includes("HO01") ||
-      String(r["Plant Name"]).toUpperCase().includes("HEAD OFFICE") ||
-      String(r["Plant Name"]).toUpperCase().includes("CENTRAL")
-    );
-  _ho01RowsCache = ho01;
-
-  // Wire chart + download but hide tables until a search is entered
+  // Wire chart
   if (df.length) {
     const plantAgg = sortBy(groupBy(df, "Plant Name", [["val","Value of Stock in Transit"],["qty","Stock in Transit"]]), "val");
     Plotly.newPlot("chart-transit-plant", [
@@ -852,15 +846,10 @@ function renderTransit() {
   document.getElementById("btn-dl-transit").onclick      = () => downloadCSV(_transitRowsCache,   transitCols.slice(0,-1), "transit_analysis.csv");
   document.getElementById("btn-dl-transit-xlsx").onclick = () => downloadExcel(_transitRowsCache, transitCols.slice(0,-1), "transit_analysis.xlsx");
 
-  // Show prompt to search; hide data tables
-  document.getElementById("transit-table-wrap").innerHTML =
-    `<div class="alert-info">🔍 Use the search box above to find and display transit items.</div>`;
-  document.getElementById("ho01-kpis").innerHTML =
-    `<div class="alert-info" style="margin:0">Search above to view HO01 transit records.</div>`;
-  document.getElementById("ho01-table-wrap").innerHTML = "";
-
-  // Render the separate Stock in Transit file section
-  renderStockTransitSection();
+  // Show all filtered transit items directly (no search gate)
+  document.getElementById("transit-table-wrap").innerHTML = transitRows.length
+    ? buildTable(transitRows, transitCols)
+    : `<div class="alert-info">No pharmaceutical transit items found.</div>`;
 }
 
 // ── Transit material search — filters main transit table ──────────────────
@@ -869,18 +858,14 @@ function renderTransitSearch() {
   const transitCols = _transitColsCache;
 
   if (!query) {
-    // Clear back to prompt
     document.getElementById("transit-search-results").innerHTML = "";
-    document.getElementById("transit-table-wrap").innerHTML =
-      `<div class="alert-info">🔍 Use the search box above to find and display transit items.</div>`;
-    // Reset HO01
-    document.getElementById("ho01-kpis").innerHTML =
-      `<div class="alert-info" style="margin:0">Search above to view HO01 transit records.</div>`;
-    document.getElementById("ho01-table-wrap").innerHTML = "";
+    document.getElementById("transit-table-wrap").innerHTML = _transitRowsCache.length
+      ? buildTable(_transitRowsCache, transitCols)
+      : `<div class="alert-info">No pharmaceutical transit items found.</div>`;
     return;
   }
 
-  // Filter main transit rows
+  // Filter transit rows by search query
   const filtered = _transitRowsCache.filter(r => {
     const code = String(r["Material"] || "").toLowerCase();
     const desc = String(r["Material Description"] || "").toLowerCase();
@@ -895,30 +880,6 @@ function renderTransitSearch() {
   document.getElementById("transit-table-wrap").innerHTML = filtered.length
     ? buildTable(filtered, transitCols)
     : `<div class="alert-info">No transit items match "<b>${escHtml(query)}</b>".</div>`;
-
-  // Filter HO01 section
-  const ho01Filtered = _ho01RowsCache.filter(r => {
-    const code = String(r["Material"] || "").toLowerCase();
-    const desc = String(r["Material Description"] || "").toLowerCase();
-    return code.includes(query) || desc.includes(query);
-  });
-
-  if (ho01Filtered.length) {
-    const transitColsNoStatus = transitCols.slice(0, -1);
-    setKpis("ho01-kpis", [
-      ["HO01 Transit Value", fmtETB(ho01Filtered.reduce((s,r) => s+r["Value of Stock in Transit"],0)), "From central hub", "amber"],
-      ["HO01 Transit Qty",   fmtQty(ho01Filtered.reduce((s,r) => s+r["Stock in Transit"],0)),          "Units in movement","blue"],
-      ["Unique SKUs",        String(new Set(ho01Filtered.map(r=>r["Material"])).size),                  "Distinct materials","green"],
-    ]);
-    document.getElementById("ho01-table-wrap").innerHTML =
-      buildTable(sortBy([...ho01Filtered], "Value of Stock in Transit"), transitColsNoStatus);
-    document.getElementById("btn-dl-ho01").onclick = () =>
-      downloadCSV(ho01Filtered, transitColsNoStatus, "ho01_transit.csv");
-  } else {
-    document.getElementById("ho01-kpis").innerHTML =
-      `<div class="alert-info">No HO01 transit records match "<b>${escHtml(query)}</b>".</div>`;
-    document.getElementById("ho01-table-wrap").innerHTML = "";
-  }
 }
 
 function clearTransitSearch() {
