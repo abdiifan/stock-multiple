@@ -736,8 +736,8 @@ function renderStockTransitSection() {
 
   // Table columns
   const stCols = [
-    { key: "_st_material",  label: "Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap" },
-    { key: "_st_desc",     label: "Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap" },
+    { key: "_st_material",  label: "Material Code", fmt:(val,r)=>renderMatCode(val,r), raw:true, cellClass:"col-mat-code-wrap" },
+    { key: "_st_desc",     label: "Material Description", fmt:(val,r)=>renderMatDesc(val,r), raw:true, cellClass:"col-mat-desc-wrap" },
     { key: "_st_plant",     label: "Plant Code" },
     { key: "_st_plantName", label: "Plant Name" },
     { key: "_st_purDoc",    label: "Purchasing Document" },
@@ -2077,14 +2077,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Stock in Transit section filter wiring
   document.getElementById("st-filter-apply").addEventListener("click", () => {
-    stFilterState.purDoc   = document.getElementById("st-filter-pur-doc").value   || "";
-    stFilterState.supPlant = document.getElementById("st-filter-sup-plant").value || "";
+    stFilterState.purDoc   = (document.getElementById("st-filter-pur-doc")   || {}).value || "";
+    stFilterState.supPlant = (document.getElementById("st-filter-sup-plant") || {}).value || "";
     renderStockTransitSection();
   });
   document.getElementById("st-filter-clear").addEventListener("click", () => {
     stFilterState = { purDoc: "", supPlant: "" };
-    document.getElementById("st-filter-pur-doc").value   = "";
-    document.getElementById("st-filter-sup-plant").value = "";
+    const purDocEl   = document.getElementById("st-filter-pur-doc");
+    const supPlantEl = document.getElementById("st-filter-sup-plant");
+    if (purDocEl)   purDocEl.value   = "";
+    if (supPlantEl) supPlantEl.value = "";
     renderStockTransitSection();
   });
 
@@ -2283,7 +2285,7 @@ document.addEventListener("DOMContentLoaded", () => {
       <span class="gsr-badge gsr-badge-stock">In Stock</span>
       ${stockRows.length} record${stockRows.length !== 1 ? "s" : ""} found
     </div>`;
-    html += buildTable(stockCols, stockRows);
+    html += buildTable(stockRows, stockCols);
 
     // Transit from separate file (if uploaded)
     if (stockTransitRaw.length > 0) {
@@ -2291,7 +2293,7 @@ document.addEventListener("DOMContentLoaded", () => {
         <span class="gsr-badge gsr-badge-transit">In Transit (Transit File)</span>
         ${transitRows.length} record${transitRows.length !== 1 ? "s" : ""} found
       </div>`;
-      html += buildTable(transitCols, transitRows);
+      html += buildTable(transitRows, transitCols);
     } else if (inTransitMain.length > 0) {
       // Fallback: show in-transit column from main data
       html += `<div class="gsr-section-title" style="margin-top:1.2rem">
