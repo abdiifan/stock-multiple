@@ -542,9 +542,6 @@ function pl(extra={}) {
 // DASHBOARD
 // ═══════════════════════════════════════════════════════════════════════════
 function renderDashboard() {
-  const pf = pageFilters.dashboard;
-  document.getElementById("dash-filter-plant").value = pf.plant || "";
-  document.getElementById("dash-filter-mg").value    = pf.mg    || "";
   const df = applyPageFilter("dashboard");
 
   const totalVal   = df.reduce((s,r) => s + r["Total Value"], 0);
@@ -780,9 +777,6 @@ function getTransitInfo(material, plantCode) {
 // TRANSIT
 // ═══════════════════════════════════════════════════════════════════════════
 function renderTransit() {
-  const pf = pageFilters.transit;
-  document.getElementById("transit-filter-plant").value = pf.plant || "";
-  document.getElementById("transit-filter-mg").value    = pf.mg    || "";
   const df = applyPageFilter("transit").filter(r => r["Stock in Transit"] > 0 && r["Value of Stock in Transit"] > 0);
 
   const totalTV = df.reduce((s,r) => s + r["Value of Stock in Transit"], 0);
@@ -860,9 +854,6 @@ function renderTransit() {
 // EXPIRY
 // ═══════════════════════════════════════════════════════════════════════════
 function renderExpiry() {
-  const pf = pageFilters.expiry;
-  document.getElementById("expiry-filter-plant").value = pf.plant || "";
-  document.getElementById("expiry-filter-mg").value    = pf.mg    || "";
   const baseDf  = applyPageFilter("expiry");
   const months  = parseInt(document.querySelector('input[name="expWin"]:checked')?.value || 6);
   const today   = new Date();
@@ -1097,9 +1088,6 @@ function clearQCSearch() {
 // QC
 // ═══════════════════════════════════════════════════════════════════════════
 function renderQC() {
-  const pf = pageFilters.qc;
-  document.getElementById("qc-filter-plant").value = pf.plant || "";
-  document.getElementById("qc-filter-mg").value    = pf.mg    || "";
   // FIX BUG-6: removed "&& r["Value of Stock in Quality Inspection"] > 0"
   // SAP sometimes records QC qty > 0 with zero ETB value (non-valuated batches,
   // consignment stock) — these must still appear for physical count audits.
@@ -1144,8 +1132,6 @@ function renderQC() {
 // BRANCH COMPARISON
 // ═══════════════════════════════════════════════════════════════════════════
 function renderBranch() {
-  const pf   = pageFilters.branch;
-  document.getElementById("branch-filter-mg").value = pf.mg || "";
   const baseDf = applyPageFilter("branch");
   const df     = baseDf;
 
@@ -1398,9 +1384,6 @@ function renderBranch() {
 // INVENTORY FLOW
 // ═══════════════════════════════════════════════════════════════════════════
 function renderFlow() {
-  const pf = pageFilters.flow;
-  document.getElementById("flow-filter-plant").value = pf.plant || "";
-  document.getElementById("flow-filter-mg").value    = pf.mg    || "";
   const df = applyPageFilter("flow");
 
   const totalVal   = df.reduce((s,r) => s + r["Total Value"], 0);
@@ -2133,27 +2116,42 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // ── Page filter wiring ──
-  function wirePageFilters(page, plantId, mgId, applyId, clearId) {
+  // FIX BUG: wirePageFilters now reads from multi-select wraps (_getSelected/_clearSelected)
+  // and writes to .plants[]/.mgs[] arrays that applyPageFilter uses.
+  // The old version wrote to scalar .plant/.mg which no longer exist on pageFilters.
+  function wirePageFilters(page, plantWrapId, mgWrapId, applyId, clearId) {
     const applyBtn = document.getElementById(applyId);
     const clearBtn = document.getElementById(clearId);
     if (applyBtn) applyBtn.addEventListener("click", () => {
-      if (plantId) pageFilters[page].plant = document.getElementById(plantId)?.value || "";
-      if (mgId)    pageFilters[page].mg    = document.getElementById(mgId)?.value    || "";
+      if (plantWrapId) {
+        const wrap = document.getElementById(plantWrapId);
+        pageFilters[page].plants = wrap?._getSelected ? wrap._getSelected() : [];
+      }
+      if (mgWrapId) {
+        const wrap = document.getElementById(mgWrapId);
+        pageFilters[page].mgs = wrap?._getSelected ? wrap._getSelected() : [];
+      }
       renderPage(page);
     });
     if (clearBtn) clearBtn.addEventListener("click", () => {
-      if (plantId) { pageFilters[page].plant = ""; const el = document.getElementById(plantId); if (el) el.value = ""; }
-      if (mgId)    { pageFilters[page].mg    = ""; const el = document.getElementById(mgId);    if (el) el.value = ""; }
+      if (plantWrapId) {
+        pageFilters[page].plants = [];
+        document.getElementById(plantWrapId)?._clearSelected?.();
+      }
+      if (mgWrapId) {
+        pageFilters[page].mgs = [];
+        document.getElementById(mgWrapId)?._clearSelected?.();
+      }
       renderPage(page);
     });
   }
 
-  wirePageFilters("dashboard","dash-filter-plant",   "dash-filter-mg",    "dash-filter-apply",   "dash-filter-clear");
-  wirePageFilters("transit",  "transit-filter-plant","transit-filter-mg", "transit-filter-apply","transit-filter-clear");
-  wirePageFilters("expiry",   "expiry-filter-plant", "expiry-filter-mg",  "expiry-filter-apply", "expiry-filter-clear");
-  wirePageFilters("qc",       "qc-filter-plant",     "qc-filter-mg",      "qc-filter-apply",     "qc-filter-clear");
-  wirePageFilters("branch",   null,                  "branch-filter-mg",  "branch-filter-apply", "branch-filter-clear");
-  wirePageFilters("flow",     "flow-filter-plant",   "flow-filter-mg",    "flow-filter-apply",   "flow-filter-clear");
+  wirePageFilters("dashboard","ms-dash-plant",    "ms-dash-mg",    "dash-filter-apply",   "dash-filter-clear");
+  wirePageFilters("transit",  "ms-transit-plant", "ms-transit-mg", "transit-filter-apply","transit-filter-clear");
+  wirePageFilters("expiry",   "ms-expiry-plant",  "ms-expiry-mg",  "expiry-filter-apply", "expiry-filter-clear");
+  wirePageFilters("qc",       "ms-qc-plant",      "ms-qc-mg",      "qc-filter-apply",     "qc-filter-clear");
+  wirePageFilters("branch",   null,               "ms-branch-mg",  "branch-filter-apply", "branch-filter-clear");
+  wirePageFilters("flow",     "ms-flow-plant",    "ms-flow-mg",    "flow-filter-apply",   "flow-filter-clear");
 
   // ── Reconciliation panel ──
   document.getElementById("open-reconcile-btn").addEventListener("click", openReconcilePanel);
@@ -2199,17 +2197,21 @@ document.addEventListener("DOMContentLoaded", () => {
     return (+n).toLocaleString(undefined, { maximumFractionDigits: 2 });
   }
 
-  function buildTable(cols, rows) {
+  // FIX BUG: argument order was (cols, rows) — reversed vs the outer buildTable(rows, cols).
+  // Also added fmt/raw/cellClass support so formatted cells render correctly.
+  function buildTable(rows, cols) {
     if (!rows.length) return '<p class="gsr-no-data">No matching records found.</p>';
     let html = '<div class="tbl-wrap"><table><thead><tr>';
-    cols.forEach(c => { html += `<th>${c.label}</th>`; });
+    cols.forEach(c => { html += `<th>${escHtml(c.label)}</th>`; });
     html += "</tr></thead><tbody>";
     rows.slice(0, 200).forEach(r => {
       html += "<tr>";
       cols.forEach(c => {
-        const v = r[c.key] ?? "—";
-        const cls = c.cls ? ` class="${c.cls}"` : "";
-        html += `<td${cls}>${v}</td>`;
+        const rawVal = r[c.key] ?? "";
+        const display = c.fmt ? c.fmt(rawVal, r) : rawVal;
+        const val = c.raw ? display : escHtml(String(display ?? ""));
+        const cls = (c.cellClass || c.cls) ? ` class="${c.cellClass || c.cls}"` : "";
+        html += `<td${cls}>${val}</td>`;
       });
       html += "</tr>";
     });
@@ -2241,8 +2243,8 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     const stockCols = [
-      { key: "Material", label: "Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap" },
-      { key: "Material Description", label: "Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap" },
+      { key: "Material", label: "Material Code", fmt:(val,r)=>renderMatCode(val,r), raw:true, cellClass:"col-mat-code-wrap" },
+      { key: "Material Description", label: "Material Description", fmt:(val,r)=>renderMatDesc(val,r), raw:true, cellClass:"col-mat-desc-wrap" },
       { key: "Plant",                label: "Plant" },
       { key: "Plant Name",           label: "Plant Name" },
       { key: "Material Group Name",  label: "Material Group" },
@@ -2253,10 +2255,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // ── Transit results (from separate transit file) ──
     const transitCols = [
-      { key: "_st_material", label: "Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap" },
-      { key: "_st_desc",     label: "Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap" },
-      { key: "_st_pur_doc",  label: "Purch. Doc." },
-      { key: "_st_sup_plant",label: "Supplying Plant" },
+      { key: "_st_material", label: "Material Code", fmt:(val,r)=>renderMatCode(val,r), raw:true, cellClass:"col-mat-code-wrap" },
+      { key: "_st_desc",     label: "Material Description", fmt:(val,r)=>renderMatDesc(val,r), raw:true, cellClass:"col-mat-desc-wrap" },
+      { key: "_st_purDoc",   label: "Purch. Doc." },
+      { key: "_st_supPlant", label: "Supplying Plant" },
       { key: "_st_qty",      label: "Qty", cls: "col-qty" },
       { key: "_st_uom",      label: "UoM" },
     ];
@@ -2297,8 +2299,8 @@ document.addEventListener("DOMContentLoaded", () => {
         ${inTransitMain.length} record${inTransitMain.length !== 1 ? "s" : ""} found
       </div>`;
       const tCols = [
-        { key: "Material", label: "Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap" },
-        { key: "Material Description", label: "Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap" },
+        { key: "Material", label: "Material Code", fmt:(val,r)=>renderMatCode(val,r), raw:true, cellClass:"col-mat-code-wrap" },
+        { key: "Material Description", label: "Material Description", fmt:(val,r)=>renderMatDesc(val,r), raw:true, cellClass:"col-mat-desc-wrap" },
         { key: "Plant",                label: "Plant" },
         { key: "Stock in Transit",     label: "Transit Qty", cls: "col-qty" },
         { key: "Value of Stock in Transit", label: "Transit Value (ETB)", cls: "col-val" },
