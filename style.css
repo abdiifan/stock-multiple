@@ -401,7 +401,7 @@ td.col-mat-desc-wrap { max-width: 280px; white-space: normal; line-height: 1.4; 
   transition: border-color 0.15s, background 0.15s;
 }
 .ms-btn:hover { border-color: var(--blue); background: var(--surface2); }
-.ms-btn.ms-active { border-color: var(--blue); color: var(--blue); }
+.ms-btn.ms-active { border-color: var(--blue); color: var(--blue); max-width: 260px; }
 .ms-arrow { font-size: 0.6rem; color: var(--dim); transition: transform 0.2s; }
 .ms-wrap.open .ms-arrow { transform: rotate(180deg); }
 .ms-dropdown {
@@ -457,6 +457,15 @@ td.col-mat-desc-wrap { max-width: 280px; white-space: normal; line-height: 1.4; 
   padding: 0 5px;
   line-height: 1.5;
   margin-left: 3px;
+}
+.ms-selected-names {
+  display: inline-block;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+  font-size: 0.75rem;
 }
 
 /* ── RESPONSIVE ── */
