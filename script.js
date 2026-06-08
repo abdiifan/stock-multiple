@@ -120,6 +120,35 @@ function escHtml(str) {
   return String(str ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 }
 
+// ── MATERIAL COLUMN HELPERS ────────────────────────────────────────────────
+// Returns true if the value looks like a text description rather than a code.
+// Codes: contain digits + hyphens, all-caps short tokens, or numeric-only.
+// Descriptions: contain spaces or are long mixed-case strings.
+function looksLikeDescription(val) {
+  if (!val) return false;
+  const s = String(val).trim();
+  if (s.length === 0) return false;
+  // Has a space → almost certainly a description
+  if (s.includes(" ")) return true;
+  // Very long (>20 chars) with no hyphen pattern → likely a description
+  if (s.length > 20 && !/^[\w\-\.\/]+$/.test(s)) return true;
+  return false;
+}
+
+// Renders the Material cell: monospace purple + amber badge if it looks like a description.
+function renderMatCode(val) {
+  const s = escHtml(String(val ?? ""));
+  const badge = looksLikeDescription(val)
+    ? `<span class="mat-desc-badge" title="This field contains a description rather than a code">DESC</span>`
+    : "";
+  return `<span class="col-mat-code">${s}</span>${badge}`;
+}
+
+// Renders the Description cell with normal text styling.
+function renderMatDesc(val) {
+  return `<span class="col-mat-desc">${escHtml(String(val ?? ""))}</span>`;
+}
+
 // ── FIX BUG-8: Timezone-safe expiry date parser ────────────────────────────
 // new Date("2024-03-15") is parsed as UTC midnight → in UTC+3 it appears as
 // 2024-03-14 after 21:00 local time, causing day-off expiry errors.
@@ -556,8 +585,8 @@ function renderStockTransitSection() {
 
   // Table columns
   const stCols = [
-    { key: "_st_material",  label: "Material" },
-    { key: "_st_desc",      label: "Description" },
+    { key: "_st_material",  label: "Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap" },
+    { key: "_st_desc",     label: "Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap" },
     { key: "_st_plant",     label: "Plant Code" },
     { key: "_st_plantName", label: "Plant Name" },
     { key: "_st_purDoc",    label: "Purchasing Document" },
@@ -620,8 +649,8 @@ function renderTransit() {
   ], pl({height:280,margin:{l:20,r:60,t:20,b:80},yaxis2:{overlaying:"y",side:"right",gridcolor:"transparent",tickfont:{color:"#3fb950"}}}), PLOTLY_CONFIG);
 
   const transitCols = [
-    {key:"Material",                  label:"Material"},
-    {key:"Material Description",      label:"Description"},
+    {key:"Material", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"},
+    {key:"Material Description", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"},
     {key:"Material Group Name",       label:"Material Group"},
     {key:"Plant Name",                label:"Plant"},
     {key:"_purDoc",                   label:"Purchasing Document"},
@@ -719,8 +748,8 @@ function renderExpiry() {
       const [yr, mo] = monthKey.split("-").map(Number);
       const monthItems = expiring.filter(r => r._expiry.getFullYear() === yr && r._expiry.getMonth() + 1 === mo);
       const drillCols = [
-        {key:"Material",                    label:"Material"},
-        {key:"Material Description",        label:"Description"},
+        {key:"Material", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"},
+        {key:"Material Description", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"},
         {key:"Material Group Name",         label:"Material Group"},
         {key:"Plant Name",                  label:"Plant"},
         {key:"Description of Storage Location", label:"Storage Location"},
@@ -769,8 +798,8 @@ function renderExpiry() {
     document.getElementById("expired-header").innerHTML = `🔴 Already Expired Items (${expiredWithStock.length})${zeroNote}`;
     const expiredRows = expiredWithStock.map(r => ({...r, _expiryStr: r._expiry ? r._expiry.toISOString().slice(0,10) : ""}));
     document.getElementById("expired-table-wrap").innerHTML = buildTable(expiredRows, [
-      {key:"Material",                       label:"Material"},
-      {key:"Material Description",           label:"Description"},
+      {key:"Material", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"},
+      {key:"Material Description", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"},
       {key:"Material Group Name",            label:"Material Group"},
       {key:"Plant Name",                     label:"Plant"},
       {key:"Description of Storage Location",label:"Storage Location"},
@@ -778,8 +807,8 @@ function renderExpiry() {
       {key:"Unrestricted Stock",             label:"Qty", fmt:fmtQty, rawKey:"Unrestricted Stock", cellClass:"col-qty"},
     ]);
     document.getElementById("btn-dl-expired").onclick = () => downloadCSV(expiredRows, [
-      {key:"Material",                       label:"Material"},
-      {key:"Material Description",           label:"Description"},
+      {key:"Material", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"},
+      {key:"Material Description", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"},
       {key:"Plant Name",                     label:"Plant"},
       {key:"Description of Storage Location",label:"Storage Location"},
       {key:"_expiryStr",                     label:"Expiry Date"},
@@ -832,8 +861,8 @@ function renderExpirySearch() {
   </div>`;
 
   const cols = [
-    {key:"Material",                       label:"Material"},
-    {key:"Material Description",           label:"Description"},
+    {key:"Material", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"},
+    {key:"Material Description", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"},
     {key:"Plant Name",                     label:"Plant"},
     {key:"Description of Storage Location",label:"Storage Location"},
     {key:"Batch",                          label:"Batch"},
@@ -892,8 +921,8 @@ function renderQCSearch() {
   </div>`;
 
   const cols = [
-    {key:"Material",                             label:"Material"},
-    {key:"Material Description",                 label:"Description"},
+    {key:"Material", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"},
+    {key:"Material Description", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"},
     {key:"Plant Name",                           label:"Plant"},
     {key:"Description of Storage Location",      label:"Storage Location"},
     {key:"Batch",                                label:"Batch"},
@@ -939,8 +968,8 @@ function renderQC() {
   ], pl({height:280,margin:{l:20,r:60,t:20,b:80},yaxis2:{overlaying:"y",side:"right",gridcolor:"transparent",tickfont:{color:"#3fb950"}}}), PLOTLY_CONFIG);
 
   const qcCols = [
-    {key:"Material",                             label:"Material"},
-    {key:"Material Description",                 label:"Description"},
+    {key:"Material", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"},
+    {key:"Material Description", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"},
     {key:"Material Group Name",                  label:"Material Group"},
     {key:"Plant Name",                           label:"Plant"},
     {key:"Description of Storage Location",      label:"Storage Location"},
@@ -1161,8 +1190,8 @@ function renderBranch() {
       chartWrap.innerHTML = "";
 
       const colDefs = [
-        {key:"mat",   label:"Material"},
-        {key:"desc",  label:"Description"},
+        {key:"mat", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"},
+        {key:"desc", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"},
         {key:"group", label:"Material Group"},
         ...allPlantNames.map(pn => ({key:`__p__${pn}`, label:pn, fmt:fmtFn, rawKey:`__r__${pn}`, cellClass:isQty?"col-qty":"col-val"})),
         {key:"grandTotal",  label:"Grand Total", fmt:fmtFn, rawKey:"grandTotal", cellClass:isQty?"col-qty":"col-val"},
@@ -1196,7 +1225,7 @@ function renderBranch() {
         ${materials.length > 200 ? `<div class="alert-info">Showing first 200 of ${materials.length}. Refine search.</div>` : ""}`;
 
       const flatCols = [
-        {key:"mat",label:"Material"}, {key:"desc",label:"Description"}, {key:"group",label:"Material Group"},
+        {key:"mat", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"}, {key:"desc", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"}, {key:"group",label:"Material Group"},
         ...allPlantNames.map(pn => ({key:`__p__${pn}`, label:pn, rawKey:`__r__${pn}`})),
         {key:"grandTotal",label:"Grand Total"},
       ];
@@ -1238,8 +1267,8 @@ function renderFlow() {
   ]);
 
   const reorderCols = [
-    {key:"Material",                  label:"Material"},
-    {key:"Material Description",      label:"Description"},
+    {key:"Material", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"},
+    {key:"Material Description", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"},
     {key:"Material Group Name",       label:"Material Group"},
     {key:"Plant Name",                label:"Plant"},
     {key:"Unrestricted Stock",        label:"Avail Qty",        fmt:fmtQty, rawKey:"Unrestricted Stock",        cellClass:"col-qty"},
@@ -1280,8 +1309,8 @@ function renderFlow() {
 
   // Inter-location transfers
   const transferCols = [
-    {key:"Material",                  label:"Material"},
-    {key:"Material Description",      label:"Description"},
+    {key:"Material", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"},
+    {key:"Material Description", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"},
     {key:"Plant Name",                label:"Receiving Plant"},
     {key:"_purDoc",                   label:"Purchasing Document"},
     {key:"_supPlant",                 label:"Supplying Plant"},
@@ -1311,8 +1340,8 @@ function renderFlow() {
   }
 
   const flowDlCols = [
-    {key:"Material",                          label:"Material"},
-    {key:"Material Description",              label:"Description"},
+    {key:"Material", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"},
+    {key:"Material Description", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"},
     {key:"Plant Name",                        label:"Plant"},
     {key:"Material Group Name",               label:"Material Group"},
     {key:"Unrestricted Stock",                label:"Available Qty",      rawKey:"Unrestricted Stock"},
@@ -1373,8 +1402,8 @@ function renderPreviewTable() {
   document.getElementById("preview-count").innerHTML = `Showing <b>${df.length.toLocaleString()}</b> of <b>${rawDf.length.toLocaleString()}</b> records`;
 
   const cols = [
-    {key:"Material",                          label:"Material"},
-    {key:"Material Description",              label:"Description"},
+    {key:"Material", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"},
+    {key:"Material Description", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"},
     {key:"Plant Name",                        label:"Plant"},
     {key:"Material Group Name",               label:"Material Group"},
     {key:"Unrestricted Stock",                label:"Avail Qty",        fmt:fmtQty, rawKey:"Unrestricted Stock",          cellClass:"col-qty"},
@@ -2058,8 +2087,8 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     const stockCols = [
-      { key: "Material",             label: "Material" },
-      { key: "Material Description", label: "Description" },
+      { key: "Material", label: "Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap" },
+      { key: "Material Description", label: "Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap" },
       { key: "Plant",                label: "Plant" },
       { key: "Plant Name",           label: "Plant Name" },
       { key: "Material Group Name",  label: "Material Group" },
@@ -2070,8 +2099,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // ── Transit results (from separate transit file) ──
     const transitCols = [
-      { key: "_st_material", label: "Material" },
-      { key: "_st_desc",     label: "Description" },
+      { key: "_st_material", label: "Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap" },
+      { key: "_st_desc",     label: "Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap" },
       { key: "_st_pur_doc",  label: "Purch. Doc." },
       { key: "_st_sup_plant",label: "Supplying Plant" },
       { key: "_st_qty",      label: "Qty", cls: "col-qty" },
@@ -2114,8 +2143,8 @@ document.addEventListener("DOMContentLoaded", () => {
         ${inTransitMain.length} record${inTransitMain.length !== 1 ? "s" : ""} found
       </div>`;
       const tCols = [
-        { key: "Material",             label: "Material" },
-        { key: "Material Description", label: "Description" },
+        { key: "Material", label: "Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap" },
+        { key: "Material Description", label: "Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap" },
         { key: "Plant",                label: "Plant" },
         { key: "Stock in Transit",     label: "Transit Qty", cls: "col-qty" },
         { key: "Value of Stock in Transit", label: "Transit Value (ETB)", cls: "col-val" },
