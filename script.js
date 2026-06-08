@@ -56,22 +56,22 @@ let currentPage = "dashboard";
 let stockTransitRaw    = [];   // raw rows from the transit xlsx
 let stFilterState      = { purDoc: "", supPlant: "" };  // filter state
 
-// Page-level filter state
+// Page-level filter state — now arrays for multi-select support
 const pageFilters = {
-  dashboard: { plant: "", mg: "" },
-  transit:   { plant: "", mg: "" },
-  expiry:    { plant: "", mg: "" },
-  qc:        { plant: "", mg: "" },
-  branch:    { mg: "" },
-  flow:      { plant: "", mg: "" },
+  dashboard: { plants: [], mgs: [] },
+  transit:   { plants: [], mgs: [] },
+  expiry:    { plants: [], mgs: [] },
+  qc:        { plants: [], mgs: [] },
+  branch:    { mgs: [] },
+  flow:      { plants: [], mgs: [] },
 };
 
 // FIX BUG-3: reset all page filters when a new file is loaded so stale plant/MG
 // values from the previous file can never produce a blank result set.
 function resetPageFilters() {
   Object.keys(pageFilters).forEach(page => {
-    pageFilters[page].plant = "";
-    pageFilters[page].mg    = "";
+    pageFilters[page].plants = [];
+    pageFilters[page].mgs    = [];
   });
 }
 
@@ -282,6 +282,92 @@ function loadFile(file) {
   reader.readAsArrayBuffer(file);
 }
 
+// ── MULTI-SELECT DROPDOWN BUILDER ─────────────────────────────────────────
+// Creates a searchable checkbox dropdown inside .ms-wrap elements.
+// wrapId = id of the .ms-wrap container
+// items  = array of string values
+// onLabel = optional function(selectedArr) → button label string
+function buildMultiSelect(wrapId, ddId, items, placeholder) {
+  const wrap = document.getElementById(wrapId);
+  const dd   = document.getElementById(ddId);
+  if (!wrap || !dd) return;
+
+  const btn  = wrap.querySelector(".ms-btn");
+
+  // Render options
+  function renderItems(filter) {
+    const filtered = filter ? items.filter(v => v.toLowerCase().includes(filter.toLowerCase())) : items;
+    dd.querySelectorAll(".ms-item").forEach(el => el.remove());
+    filtered.forEach(val => {
+      const label = document.createElement("label");
+      label.className = "ms-item";
+      const cb = document.createElement("input");
+      cb.type  = "checkbox";
+      cb.value = val;
+      // Restore checked state
+      const page = wrap.dataset.page, key = wrap.dataset.key;
+      if (page && key && pageFilters[page] && (pageFilters[page][key] || []).includes(val)) {
+        cb.checked = true;
+      }
+      cb.addEventListener("change", updateLabel);
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(val));
+      dd.appendChild(label);
+    });
+  }
+
+  function updateLabel() {
+    const checked = [...dd.querySelectorAll("input:checked")].map(c => c.value);
+    if (checked.length === 0) {
+      btn.innerHTML = `${escHtml(placeholder)} <span class="ms-arrow">▾</span>`;
+      btn.classList.remove("ms-active");
+    } else {
+      const badgeHtml = `<span class="ms-count-badge">${checked.length}</span>`;
+      btn.innerHTML = `${escHtml(placeholder)} ${badgeHtml} <span class="ms-arrow">▾</span>`;
+      btn.classList.add("ms-active");
+    }
+  }
+
+  // Build search box + items
+  dd.innerHTML = "";
+  const searchInput = document.createElement("input");
+  searchInput.className   = "ms-search";
+  searchInput.placeholder = "Search…";
+  searchInput.type        = "text";
+  searchInput.addEventListener("input", e => renderItems(e.target.value));
+  dd.appendChild(searchInput);
+  renderItems("");
+
+  // Toggle open/close
+  btn.addEventListener("click", e => {
+    e.stopPropagation();
+    // Close all others first
+    document.querySelectorAll(".ms-wrap.open").forEach(w => { if (w !== wrap) w.classList.remove("open"); });
+    wrap.classList.toggle("open");
+    if (wrap.classList.contains("open")) searchInput.focus();
+  });
+
+  // Expose refresh function on the wrap element
+  wrap._refreshOptions = function(newItems) {
+    renderItems(searchInput.value || "");
+    updateLabel();
+  };
+  wrap._getSelected = function() {
+    return [...dd.querySelectorAll("input:checked")].map(c => c.value);
+  };
+  wrap._clearSelected = function() {
+    dd.querySelectorAll("input:checked").forEach(cb => { cb.checked = false; });
+    updateLabel();
+  };
+
+  updateLabel();
+}
+
+// Close dropdowns when clicking outside
+document.addEventListener("click", () => {
+  document.querySelectorAll(".ms-wrap.open").forEach(w => w.classList.remove("open"));
+});
+
 // ── POPULATE FILTER DROPDOWNS ──────────────────────────────────────────────
 function populateAllFilters() {
   const plants = [...new Set(rawDf.map(r => r["Plant Name"]))].filter(Boolean).sort();
@@ -290,19 +376,49 @@ function populateAllFilters() {
     .filter(name => !isNonMedicalGroup(name))
     .sort();
 
-  const plantSelectors   = ["dash-filter-plant","transit-filter-plant","expiry-filter-plant","qc-filter-plant","flow-filter-plant","filter-plant"];
-  const mgSelectors      = ["dash-filter-mg","transit-filter-mg","expiry-filter-mg","qc-filter-mg","branch-filter-mg","flow-filter-mg","filter-mg"];
-  const mgNameSelectors  = ["filter-mgname"];
+  // Plant multi-selects
+  const plantConfigs = [
+    { wrapId:"ms-dash-plant",    ddId:"ms-dash-plant-dd",    page:"dashboard", key:"plants" },
+    { wrapId:"ms-transit-plant", ddId:"ms-transit-plant-dd", page:"transit",   key:"plants" },
+    { wrapId:"ms-expiry-plant",  ddId:"ms-expiry-plant-dd",  page:"expiry",    key:"plants" },
+    { wrapId:"ms-qc-plant",      ddId:"ms-qc-plant-dd",      page:"qc",        key:"plants" },
+    { wrapId:"ms-flow-plant",    ddId:"ms-flow-plant-dd",    page:"flow",      key:"plants" },
+  ];
+  plantConfigs.forEach(cfg => {
+    const wrap = document.getElementById(cfg.wrapId);
+    if (wrap) { wrap.dataset.page = cfg.page; wrap.dataset.key = cfg.key; }
+    buildMultiSelect(cfg.wrapId, cfg.ddId, plants, "All Plants");
+  });
 
-  plantSelectors.forEach(id => {
-    const el = document.getElementById(id); if (!el) return;
-    el.innerHTML = `<option value="">All Plants</option>` + plants.map(p => `<option value="${escHtml(p)}">${escHtml(p)}</option>`).join("");
+  // MG multi-selects
+  const mgConfigs = [
+    { wrapId:"ms-dash-mg",    ddId:"ms-dash-mg-dd",    page:"dashboard", key:"mgs" },
+    { wrapId:"ms-transit-mg", ddId:"ms-transit-mg-dd", page:"transit",   key:"mgs" },
+    { wrapId:"ms-expiry-mg",  ddId:"ms-expiry-mg-dd",  page:"expiry",    key:"mgs" },
+    { wrapId:"ms-qc-mg",      ddId:"ms-qc-mg-dd",      page:"qc",        key:"mgs" },
+    { wrapId:"ms-branch-mg",  ddId:"ms-branch-mg-dd",  page:"branch",    key:"mgs" },
+    { wrapId:"ms-flow-mg",    ddId:"ms-flow-mg-dd",    page:"flow",      key:"mgs" },
+  ];
+  mgConfigs.forEach(cfg => {
+    const wrap = document.getElementById(cfg.wrapId);
+    if (wrap) { wrap.dataset.page = cfg.page; wrap.dataset.key = cfg.key; }
+    buildMultiSelect(cfg.wrapId, cfg.ddId, mgs, "All Material Groups");
   });
-  mgSelectors.forEach(id => {
+
+  // Legacy multi-select for Data Preview (kept as-is)
+  const plantSelLegacy  = ["filter-plant"];
+  const mgSelLegacy     = ["filter-mg"];
+  const mgNameSelLegacy = ["filter-mgname"];
+
+  plantSelLegacy.forEach(id => {
     const el = document.getElementById(id); if (!el) return;
-    el.innerHTML = `<option value="">All Material Groups</option>` + mgs.map(m => `<option value="${escHtml(m)}">${escHtml(m)}</option>`).join("");
+    el.innerHTML = plants.map(p => `<option value="${escHtml(p)}">${escHtml(p)}</option>`).join("");
   });
-  mgNameSelectors.forEach(id => {
+  mgSelLegacy.forEach(id => {
+    const el = document.getElementById(id); if (!el) return;
+    el.innerHTML = mgs.map(m => `<option value="${escHtml(m)}">${escHtml(m)}</option>`).join("");
+  });
+  mgNameSelLegacy.forEach(id => {
     const el = document.getElementById(id); if (!el) return;
     el.innerHTML = mgs.map(v => `<option value="${escHtml(v)}">${escHtml(v)}</option>`).join("");
   });
@@ -313,9 +429,11 @@ function populateAllFilters() {
 function applyPageFilter(page) {
   const f    = pageFilters[page] || {};
   const base = getReconciledBase();
+  const plants = f.plants || [];
+  const mgs    = f.mgs    || [];
   return base.filter(r =>
-    (!f.plant || r["Plant Name"] === f.plant) &&
-    (!f.mg    || r["Material Group Name"] === f.mg)
+    (!plants.length || plants.includes(r["Plant Name"])) &&
+    (!mgs.length    || mgs.includes(r["Material Group Name"]))
   );
 }
 
