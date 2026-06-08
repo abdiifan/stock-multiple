@@ -242,8 +242,8 @@
       </div>
     </div>
     <div class="filter-bar">
-      <select id="dash-filter-plant" class="filter-select"><option value="">All Plants</option></select>
-      <select id="dash-filter-mg" class="filter-select"><option value="">All Material Groups</option></select>
+      <div class="ms-wrap" id="ms-dash-plant"><button class="ms-btn" type="button">All Plants <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-dash-plant-dd"></div></div>
+      <div class="ms-wrap" id="ms-dash-mg"><button class="ms-btn" type="button">All Material Groups <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-dash-mg-dd"></div></div>
       <button class="apply-btn small" id="dash-filter-apply">Apply</button>
       <button class="apply-btn secondary small" id="dash-filter-clear">Clear</button>
     </div>
@@ -278,10 +278,23 @@
       </div>
     </div>
     <div class="filter-bar">
-      <select id="transit-filter-plant" class="filter-select"><option value="">All Plants</option></select>
-      <select id="transit-filter-mg" class="filter-select"><option value="">All Material Groups</option></select>
+      <div class="ms-wrap" id="ms-transit-plant"><button class="ms-btn" type="button">All Plants <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-transit-plant-dd"></div></div>
+      <div class="ms-wrap" id="ms-transit-mg"><button class="ms-btn" type="button">All Material Groups <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-transit-mg-dd"></div></div>
       <button class="apply-btn small" id="transit-filter-apply">Apply</button>
       <button class="apply-btn secondary small" id="transit-filter-clear">Clear</button>
+    </div>
+
+    <!-- Material Search for Transit -->
+    <div class="chart-box full" style="margin-bottom:1rem">
+      <div class="section-header" style="margin-bottom:0.4rem">🔍 Material Transit Lookup</div>
+      <div style="color:var(--muted);font-size:0.78rem;margin-bottom:0.75rem">Search any material to see all its stock in transit across plants and batches</div>
+      <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-bottom:0.75rem">
+        <input id="transit-search-input" type="text" placeholder="Type material code or name…"
+          style="flex:1;min-width:220px;max-width:400px;padding:0.45rem 0.75rem;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:0.82rem;outline:none" />
+        <button class="apply-btn small" id="transit-search-btn">Search</button>
+        <button class="apply-btn secondary small" id="transit-search-clear">Clear</button>
+      </div>
+      <div id="transit-search-results"></div>
     </div>
     <div class="kpi-row" id="transit-kpis"></div>
     <div class="chart-box full"><div class="section-header">Transit Quantity &amp; Value by Plant</div><div id="chart-transit-plant"></div></div>
@@ -337,8 +350,8 @@
         <label><input type="radio" name="expWin" value="6" checked /> Next 6 Months</label>
         <label><input type="radio" name="expWin" value="12" /> Next 12 Months</label>
       </div>
-      <select id="expiry-filter-plant" class="filter-select"><option value="">All Plants</option></select>
-      <select id="expiry-filter-mg" class="filter-select"><option value="">All Material Groups</option></select>
+      <div class="ms-wrap" id="ms-expiry-plant"><button class="ms-btn" type="button">All Plants <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-expiry-plant-dd"></div></div>
+      <div class="ms-wrap" id="ms-expiry-mg"><button class="ms-btn" type="button">All Material Groups <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-expiry-mg-dd"></div></div>
       <button class="apply-btn small" id="expiry-filter-apply">Apply</button>
       <button class="apply-btn secondary small" id="expiry-filter-clear">Clear</button>
     </div>
@@ -396,8 +409,8 @@
       </div>
     </div>
     <div class="filter-bar">
-      <select id="qc-filter-plant" class="filter-select"><option value="">All Plants</option></select>
-      <select id="qc-filter-mg" class="filter-select"><option value="">All Material Groups</option></select>
+      <div class="ms-wrap" id="ms-qc-plant"><button class="ms-btn" type="button">All Plants <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-qc-plant-dd"></div></div>
+      <div class="ms-wrap" id="ms-qc-mg"><button class="ms-btn" type="button">All Material Groups <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-qc-mg-dd"></div></div>
       <button class="apply-btn small" id="qc-filter-apply">Apply</button>
       <button class="apply-btn secondary small" id="qc-filter-clear">Clear</button>
     </div>
@@ -432,7 +445,7 @@
     </div>
     <div id="branch-central-info" class="alert-info" style="margin-bottom:1rem;display:none"></div>
     <div class="filter-bar">
-      <select id="branch-filter-mg" class="filter-select"><option value="">All Material Groups</option></select>
+      <div class="ms-wrap" id="ms-branch-mg"><button class="ms-btn" type="button">All Material Groups <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-branch-mg-dd"></div></div>
       <button class="apply-btn small" id="branch-filter-apply">Apply</button>
       <button class="apply-btn secondary small" id="branch-filter-clear">Clear</button>
     </div>
@@ -453,10 +466,23 @@
       </div>
     </div>
     <div class="filter-bar">
-      <select id="flow-filter-plant" class="filter-select"><option value="">All Plants</option></select>
-      <select id="flow-filter-mg" class="filter-select"><option value="">All Material Groups</option></select>
+      <div class="ms-wrap" id="ms-flow-plant"><button class="ms-btn" type="button">All Plants <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-flow-plant-dd"></div></div>
+      <div class="ms-wrap" id="ms-flow-mg"><button class="ms-btn" type="button">All Material Groups <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-flow-mg-dd"></div></div>
       <button class="apply-btn small" id="flow-filter-apply">Apply</button>
       <button class="apply-btn secondary small" id="flow-filter-clear">Clear</button>
+    </div>
+
+    <!-- Material Search for Flow -->
+    <div class="chart-box full" style="margin-bottom:1rem">
+      <div class="section-header" style="margin-bottom:0.4rem">🔍 Material Inventory Flow Lookup</div>
+      <div style="color:var(--muted);font-size:0.78rem;margin-bottom:0.75rem">Search any material to see all its QC stock across plants and batches</div>
+      <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-bottom:0.75rem">
+        <input id="flow-search-input" type="text" placeholder="Type material code or name…"
+          style="flex:1;min-width:220px;max-width:400px;padding:0.45rem 0.75rem;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:0.82rem;outline:none" />
+        <button class="apply-btn small" id="flow-search-btn">Search</button>
+        <button class="apply-btn secondary small" id="flow-search-clear">Clear</button>
+      </div>
+      <div id="flow-search-results"></div>
     </div>
     <div class="kpi-row" id="flow-kpis"></div>
     <div class="section-header">🔴 Reorder Alerts — Zero or Critically Low Unrestricted Stock</div>
