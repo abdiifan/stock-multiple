@@ -142,23 +142,36 @@ tbody tr.row-blue   { background: rgba(88,166,255,0.08); }
 .col-val  { color: var(--blue) !important; font-family: 'IBM Plex Mono', monospace; }
 
 /* ── MATERIAL CODE / DESCRIPTION COLUMNS ── */
+/* Normal structured SAP code (e.g. 204-CRPR-0403) */
 .col-mat-code {
   font-family: 'IBM Plex Mono', monospace;
   font-size: 0.75rem;
   color: var(--purple) !important;
   white-space: nowrap;
 }
+/* When the "code" field actually stores a descriptive name (no SAP code exists) */
+.mat-name-as-code {
+  font-size: 0.76rem;
+  color: var(--amber);
+  font-style: italic;
+}
+/* When description column is identical to the code — suppress the pointless repeat */
+.mat-desc-same {
+  font-size: 0.72rem;
+  color: var(--dim);
+  font-style: italic;
+}
+/* Normal description text */
 .col-mat-desc {
   color: var(--text);
   font-size: 0.78rem;
-  max-width: 260px;
   white-space: normal;
   line-height: 1.35;
 }
 /* td wrappers */
-td.col-mat-code-wrap { white-space: nowrap; min-width: 120px; }
-td.col-mat-desc-wrap { max-width: 260px; white-space: normal; line-height: 1.4; }
-/* badge shown when Material field contains a text description instead of a code */
+td.col-mat-code-wrap { white-space: nowrap; min-width: 130px; }
+td.col-mat-desc-wrap { max-width: 280px; white-space: normal; line-height: 1.4; }
+/* Amber NAME badge — shown when Material field holds a name, not a code */
 .mat-desc-badge {
   display: inline-block;
   font-size: 0.58rem;
