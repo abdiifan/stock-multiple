@@ -121,32 +121,67 @@ function escHtml(str) {
 }
 
 // ── MATERIAL COLUMN HELPERS ────────────────────────────────────────────────
-// Returns true if the value looks like a text description rather than a code.
-// Codes: contain digits + hyphens, all-caps short tokens, or numeric-only.
-// Descriptions: contain spaces or are long mixed-case strings.
+// SAP sometimes stores the description text in the Material field when no
+// numeric/structured code exists. We detect and flag this clearly.
+
+// Returns true if the value looks like free-text description rather than a code.
 function looksLikeDescription(val) {
   if (!val) return false;
   const s = String(val).trim();
-  if (s.length === 0) return false;
-  // Has a space → almost certainly a description
-  if (s.includes(" ")) return true;
-  // Very long (>20 chars) with no hyphen pattern → likely a description
-  if (s.length > 20 && !/^[\w\-\.\/]+$/.test(s)) return true;
-  return false;
+  if (!s) return false;
+  return s.includes(" ") || (s.length > 22 && !/^[\w\-\.\/]+$/.test(s));
 }
 
-// Renders the Material cell: monospace purple + amber badge if it looks like a description.
-function renderMatCode(val) {
-  const s = escHtml(String(val ?? ""));
-  const badge = looksLikeDescription(val)
-    ? `<span class="mat-desc-badge" title="This field contains a description rather than a code">DESC</span>`
-    : "";
-  return `<span class="col-mat-code">${s}</span>${badge}`;
+// Gets the description sibling field from the row, handling both main-data
+// rows (Material Description) and transit rows (_st_desc, desc).
+function getSiblingDesc(row) {
+  if (!row) return "";
+  return String(
+    row["Material Description"] ?? row["_st_desc"] ?? row["desc"] ?? ""
+  ).trim();
 }
 
-// Renders the Description cell with normal text styling.
-function renderMatDesc(val) {
-  return `<span class="col-mat-desc">${escHtml(String(val ?? ""))}</span>`;
+// Gets the code sibling field — used by desc renderer to detect duplicates.
+function getSiblingCode(row) {
+  if (!row) return "";
+  return String(
+    row["Material"] ?? row["_st_material"] ?? row["mat"] ?? ""
+  ).trim();
+}
+
+// ── renderMatCode(val, row) ────────────────────────────────────────────────
+// Renders the "Material Code" cell.
+//  • Normal code  → purple monospace
+//  • Val looks like a description (has spaces / long) → amber "NAME" badge,
+//    styled differently so it's obvious this isn't a structured code
+function renderMatCode(val, row) {
+  const s = escHtml(String(val ?? "").trim());
+  if (!s) return '<span style="color:var(--dim)">—</span>';
+
+  if (looksLikeDescription(val)) {
+    // The "code" field actually contains a descriptive name
+    return `<span class="mat-name-as-code" title="No structured code — SAP stores the name here">${s}</span>`
+         + `<span class="mat-desc-badge" title="Material field contains a name, not a code">NAME</span>`;
+  }
+  return `<span class="col-mat-code">${s}</span>`;
+}
+
+// ── renderMatDesc(val, row) ────────────────────────────────────────────────
+// Renders the "Material Description" cell.
+//  • If description === code (SAP duplicate) → show italic muted "(same as code)"
+//  • Otherwise → normal readable text
+function renderMatDesc(val, row) {
+  const desc = String(val ?? "").trim();
+  const code = getSiblingCode(row);
+
+  if (!desc) return '<span style="color:var(--dim)">—</span>';
+
+  // Description is identical to the code field → don't repeat it
+  if (desc === code) {
+    return `<span class="mat-desc-same" title="Description is identical to the material code field">— same as code —</span>`;
+  }
+
+  return `<span class="col-mat-desc">${escHtml(desc)}</span>`;
 }
 
 // ── FIX BUG-8: Timezone-safe expiry date parser ────────────────────────────
@@ -328,7 +363,8 @@ function buildTable(rows, cols, rowClass, extraClass="") {
   const tbody = `<tbody>${rows.map(row => {
     const cls = rowClass ? rowClass(row) : "";
     return `<tr class="${cls}">${cols.map(c => {
-      const raw     = c.fmt ? c.fmt(row[c.key]) : (row[c.key] ?? "");
+      // Pass both the cell value AND the full row so fmt functions can cross-check sibling fields
+      const raw     = c.fmt ? c.fmt(row[c.key], row) : (row[c.key] ?? "");
       const val     = c.raw ? raw : escHtml(String(raw));
       const cellCls = c.cellClass || "";
       return `<td class="${cellCls}">${val}</td>`;
