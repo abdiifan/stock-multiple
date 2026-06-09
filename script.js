@@ -1815,11 +1815,11 @@ function handleReconcileFileUpload(file) {
         const r       = rows[i];
         const srcMat  = String(r[0] || "").trim();
         const srcDesc = String(r[1] || "").trim();
-        const srcUnit = String(r[2] || "").trim();
-        const factor  = parseFloat(r[3]);
-        const tgtMat  = String(r[4] || "").trim();
-        const tgtDesc = String(r[5] || "").trim();
-        const tgtUnit = String(r[6] || "").trim();
+        const factor  = parseFloat(r[2]);
+        const tgtMat  = String(r[3] || "").trim();
+        const tgtDesc = String(r[4] || "").trim();
+
+
 
         if (!srcMat || !tgtMat || isNaN(factor) || factor <= 0) { skipped++; continue; }
 
@@ -1829,9 +1829,9 @@ function handleReconcileFileUpload(file) {
 
         // FIX ROBUST: store factor with 9dp precision cap
         reconcileGroups.push({
-          sourceMaterial: srcMat, sourceDesc: srcDesc, sourceUnit: srcUnit,
+          sourceMaterial: srcMat, sourceDesc: srcDesc, sourceUnit: "",
           conversionFactor: Math.round(factor * 1e9) / 1e9,
-          targetMaterial: tgtMat, targetDesc: tgtDesc, targetUnit: tgtUnit,
+          targetMaterial: tgtMat, targetDesc: tgtDesc, targetUnit: "",
         });
         added++;
       }
@@ -2209,8 +2209,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (applyBtn) applyBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       if (!rawDf.length) return;
-      // Close any open dropdowns before reading — prevents race with global close handler
-      document.querySelectorAll(".ms-wrap.open").forEach(w => w.classList.remove("open"));
+      // Read selections FIRST before closing dropdowns, so checked state is intact
       if (plantWrapId) {
         const wrap = document.getElementById(plantWrapId);
         pageFilters[page].plants = (wrap && wrap._getSelected) ? wrap._getSelected() : [];
@@ -2219,6 +2218,8 @@ document.addEventListener("DOMContentLoaded", () => {
         const wrap = document.getElementById(mgWrapId);
         pageFilters[page].mgs = (wrap && wrap._getSelected) ? wrap._getSelected() : [];
       }
+      // Close dropdowns AFTER reading
+      document.querySelectorAll(".ms-wrap.open").forEach(w => w.classList.remove("open"));
       renderPage(page);
     });
     if (clearBtn) clearBtn.addEventListener("click", (e) => {
@@ -2398,7 +2399,7 @@ document.addEventListener("DOMContentLoaded", () => {
         { key: "Stock in Transit",     label: "Transit Qty", cls: "col-qty" },
         { key: "Value of Stock in Transit", label: "Transit Value (ETB)", cls: "col-val" },
       ];
-      html += buildTable(tCols, inTransitMain);
+      html += buildTable(inTransitMain, tCols);
     }
 
     out.innerHTML = html;
