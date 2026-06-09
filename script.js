@@ -2206,8 +2206,11 @@ document.addEventListener("DOMContentLoaded", () => {
   function wirePageFilters(page, plantWrapId, mgWrapId, applyId, clearId) {
     const applyBtn = document.getElementById(applyId);
     const clearBtn = document.getElementById(clearId);
-    if (applyBtn) applyBtn.addEventListener("click", () => {
-      if (!rawDf.length) return; // no data loaded yet
+    if (applyBtn) applyBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (!rawDf.length) return;
+      // Close any open dropdowns before reading — prevents race with global close handler
+      document.querySelectorAll(".ms-wrap.open").forEach(w => w.classList.remove("open"));
       if (plantWrapId) {
         const wrap = document.getElementById(plantWrapId);
         pageFilters[page].plants = (wrap && wrap._getSelected) ? wrap._getSelected() : [];
@@ -2218,8 +2221,10 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       renderPage(page);
     });
-    if (clearBtn) clearBtn.addEventListener("click", () => {
+    if (clearBtn) clearBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
       if (!rawDf.length) return;
+      document.querySelectorAll(".ms-wrap.open").forEach(w => w.classList.remove("open"));
       if (plantWrapId) {
         pageFilters[page].plants = [];
         const wrap = document.getElementById(plantWrapId);
