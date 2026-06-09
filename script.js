@@ -236,8 +236,10 @@ function loadFile(file) {
 
         let df = trimmed
           .filter(r => String(r["Special Stock Type"]).trim() !== "Q")
+          .filter(r => !isProjectStockDescription(r["Special Stock Type Description"]))
           .filter(r => !isNonMedicalCode(r["Material"]))
-          .filter(r => !isNonMedicalGroup(r["Material Group Name"]));
+          .filter(r => !isNonMedicalGroup(r["Material Group Name"]))
+          .filter(r => !isExcludedStorageLocation(r["Storage Location"]));
 
         const numCols = [
           "Unrestricted Stock","Stock in Quality Inspection","Blocked Stock","Stock in Transit",
@@ -792,7 +794,9 @@ function renderTransit() {
     r["Stock in Transit"] > 0 &&
     r["Value of Stock in Transit"] > 0 &&
     !isNonMedicalCode(r["Material"]) &&
-    !isNonMedicalGroup(r["Material Group Name"])
+    !isNonMedicalGroup(r["Material Group Name"]) &&
+    !isProjectStockDescription(r["Special Stock Type Description"]) &&
+    !isExcludedStorageLocation(r["Storage Location"])
   );
 
   const totalTV = df.reduce((s,r) => s + r["Value of Stock in Transit"], 0);
