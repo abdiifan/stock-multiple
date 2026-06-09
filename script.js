@@ -432,12 +432,20 @@ function populateAllFilters() {
 
 // ── APPLY PAGE FILTER ──────────────────────────────────────────────────────
 // Uses the memoised reconciled base for performance.
+// Also re-enforces base exclusion rules so excluded rows never appear on any page
+// even if rawDf somehow contains them (e.g. after reconciliation merges).
 function applyPageFilter(page) {
   const f    = pageFilters[page] || {};
   const base = getReconciledBase();
   const plants = f.plants || [];
   const mgs    = f.mgs    || [];
   return base.filter(r =>
+    // Re-apply base exclusion rules (defence-in-depth)
+    !isNonMedicalCode(r["Material"]) &&
+    !isNonMedicalGroup(r["Material Group Name"]) &&
+    !isProjectStockDescription(r["Special Stock Type Description"]) &&
+    !isExcludedStorageLocation(r["Storage Location"]) &&
+    // Page-level plant / material group filters
     (!plants.length || plants.includes(r["Plant Name"])) &&
     (!mgs.length    || mgs.includes(r["Material Group Name"]))
   );
@@ -2157,6 +2165,13 @@ document.addEventListener("DOMContentLoaded", () => {
     renderStockTransitSection();
   });
 
+  // Material transit lookup
+  document.getElementById("transit-search-btn").addEventListener("click", renderTransitSearch);
+  document.getElementById("transit-search-clear").addEventListener("click", clearTransitSearch);
+  document.getElementById("transit-search-input").addEventListener("keydown", e => {
+    if (e.key === "Enter") renderTransitSearch();
+  });
+
   // Expiry window radio
   document.getElementById("expiry-window-group").addEventListener("change", () => {
     if (rawDf.length && currentPage === "expiry") renderExpiry();
@@ -2193,8 +2208,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const clearBtn = document.getElementById(clearId);
     if (applyBtn) applyBtn.addEventListener("click", () => {
       if (!rawDf.length) return; // no data loaded yet
-      // Look up wrap at click-time so we always get the live DOM element
-      // (populateAllFilters rebuilds the dropdown on each file upload)
       if (plantWrapId) {
         const wrap = document.getElementById(plantWrapId);
         pageFilters[page].plants = (wrap && wrap._getSelected) ? wrap._getSelected() : [];
@@ -2203,7 +2216,6 @@ document.addEventListener("DOMContentLoaded", () => {
         const wrap = document.getElementById(mgWrapId);
         pageFilters[page].mgs = (wrap && wrap._getSelected) ? wrap._getSelected() : [];
       }
-      invalidateReconCache();
       renderPage(page);
     });
     if (clearBtn) clearBtn.addEventListener("click", () => {
@@ -2218,7 +2230,6 @@ document.addEventListener("DOMContentLoaded", () => {
         const wrap = document.getElementById(mgWrapId);
         if (wrap && wrap._clearSelected) wrap._clearSelected();
       }
-      invalidateReconCache();
       renderPage(page);
     });
   }
