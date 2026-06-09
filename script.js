@@ -817,8 +817,8 @@ function renderTransit() {
   ]);
 
   const transitCols = [
-    {key:"Material", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"},
-    {key:"Material Description", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"},
+    {key:"Material", label:"Material Code", fmt:(val,r)=>renderMatCode(val,r), raw:true, cellClass:"col-mat-code-wrap"},
+    {key:"Material Description", label:"Material Description", fmt:(val,r)=>renderMatDesc(val,r), raw:true, cellClass:"col-mat-desc-wrap"},
     {key:"Material Group Name",       label:"Material Group"},
     {key:"Plant Name",                label:"Plant"},
     {key:"_purDoc",                   label:"Purchasing Document"},
@@ -942,8 +942,8 @@ function renderExpiry() {
       const [yr, mo] = monthKey.split("-").map(Number);
       const monthItems = expiring.filter(r => r._expiry.getFullYear() === yr && r._expiry.getMonth() + 1 === mo);
       const drillCols = [
-        {key:"Material", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"},
-        {key:"Material Description", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"},
+        {key:"Material", label:"Material Code", fmt:(val,r)=>renderMatCode(val,r), raw:true, cellClass:"col-mat-code-wrap"},
+        {key:"Material Description", label:"Material Description", fmt:(val,r)=>renderMatDesc(val,r), raw:true, cellClass:"col-mat-desc-wrap"},
         {key:"Material Group Name",         label:"Material Group"},
         {key:"Plant Name",                  label:"Plant"},
         {key:"Description of Storage Location", label:"Storage Location"},
@@ -992,8 +992,8 @@ function renderExpiry() {
     document.getElementById("expired-header").innerHTML = `🔴 Already Expired Items (${expiredWithStock.length})${zeroNote}`;
     const expiredRows = expiredWithStock.map(r => ({...r, _expiryStr: r._expiry ? r._expiry.toISOString().slice(0,10) : ""}));
     document.getElementById("expired-table-wrap").innerHTML = buildTable(expiredRows, [
-      {key:"Material", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"},
-      {key:"Material Description", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"},
+      {key:"Material", label:"Material Code", fmt:(val,r)=>renderMatCode(val,r), raw:true, cellClass:"col-mat-code-wrap"},
+      {key:"Material Description", label:"Material Description", fmt:(val,r)=>renderMatDesc(val,r), raw:true, cellClass:"col-mat-desc-wrap"},
       {key:"Material Group Name",            label:"Material Group"},
       {key:"Plant Name",                     label:"Plant"},
       {key:"Description of Storage Location",label:"Storage Location"},
@@ -1001,8 +1001,8 @@ function renderExpiry() {
       {key:"Unrestricted Stock",             label:"Qty", fmt:fmtQty, rawKey:"Unrestricted Stock", cellClass:"col-qty"},
     ]);
     document.getElementById("btn-dl-expired").onclick = () => downloadCSV(expiredRows, [
-      {key:"Material", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"},
-      {key:"Material Description", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"},
+      {key:"Material", label:"Material Code", fmt:(val,r)=>renderMatCode(val,r), raw:true, cellClass:"col-mat-code-wrap"},
+      {key:"Material Description", label:"Material Description", fmt:(val,r)=>renderMatDesc(val,r), raw:true, cellClass:"col-mat-desc-wrap"},
       {key:"Plant Name",                     label:"Plant"},
       {key:"Description of Storage Location",label:"Storage Location"},
       {key:"_expiryStr",                     label:"Expiry Date"},
@@ -1065,8 +1065,8 @@ function renderExpirySearch() {
   </div>`;
 
   const cols = [
-    {key:"Material", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"},
-    {key:"Material Description", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"},
+    {key:"Material", label:"Material Code", fmt:(val,r)=>renderMatCode(val,r), raw:true, cellClass:"col-mat-code-wrap"},
+    {key:"Material Description", label:"Material Description", fmt:(val,r)=>renderMatDesc(val,r), raw:true, cellClass:"col-mat-desc-wrap"},
     {key:"Plant Name",                     label:"Plant"},
     {key:"Description of Storage Location",label:"Storage Location"},
     {key:"Batch",                          label:"Batch"},
@@ -1141,8 +1141,8 @@ function renderQCSearch() {
   </div>`;
 
   const cols = [
-    {key:"Material", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"},
-    {key:"Material Description", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"},
+    {key:"Material", label:"Material Code", fmt:(val,r)=>renderMatCode(val,r), raw:true, cellClass:"col-mat-code-wrap"},
+    {key:"Material Description", label:"Material Description", fmt:(val,r)=>renderMatDesc(val,r), raw:true, cellClass:"col-mat-desc-wrap"},
     {key:"Plant Name",                           label:"Plant"},
     {key:"Description of Storage Location",      label:"Storage Location"},
     {key:"Batch",                                label:"Batch"},
@@ -1185,8 +1185,8 @@ function renderQC() {
   ], pl({height:280,margin:{l:20,r:60,t:20,b:80},yaxis2:{overlaying:"y",side:"right",gridcolor:"transparent",tickfont:{color:"#3fb950"}}}), PLOTLY_CONFIG);
 
   const qcCols = [
-    {key:"Material", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"},
-    {key:"Material Description", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"},
+    {key:"Material", label:"Material Code", fmt:(val,r)=>renderMatCode(val,r), raw:true, cellClass:"col-mat-code-wrap"},
+    {key:"Material Description", label:"Material Description", fmt:(val,r)=>renderMatDesc(val,r), raw:true, cellClass:"col-mat-desc-wrap"},
     {key:"Material Group Name",                  label:"Material Group"},
     {key:"Plant Name",                           label:"Plant"},
     {key:"Description of Storage Location",      label:"Storage Location"},
@@ -1405,8 +1405,8 @@ function renderBranch() {
       chartWrap.innerHTML = "";
 
       const colDefs = [
-        {key:"mat", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"},
-        {key:"desc", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"},
+        {key:"mat", label:"Material Code", fmt:(val,r)=>renderMatCode(val,r), raw:true, cellClass:"col-mat-code-wrap"},
+        {key:"desc", label:"Material Description", fmt:(val,r)=>renderMatDesc(val,r), raw:true, cellClass:"col-mat-desc-wrap"},
         {key:"group", label:"Material Group"},
         ...allPlantNames.map(pn => ({key:`__p__${pn}`, label:pn, fmt:fmtFn, rawKey:`__r__${pn}`, cellClass:isQty?"col-qty":"col-val"})),
         {key:"grandTotal",  label:"Grand Total", fmt:fmtFn, rawKey:"grandTotal", cellClass:isQty?"col-qty":"col-val"},
@@ -1440,7 +1440,7 @@ function renderBranch() {
         ${materials.length > 200 ? `<div class="alert-info">Showing first 200 of ${materials.length}. Refine search.</div>` : ""}`;
 
       const flatCols = [
-        {key:"mat", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"}, {key:"desc", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"}, {key:"group",label:"Material Group"},
+        {key:"mat", label:"Material Code", fmt:(val,r)=>renderMatCode(val,r), raw:true, cellClass:"col-mat-code-wrap"}, {key:"desc", label:"Material Description", fmt:(val,r)=>renderMatDesc(val,r), raw:true, cellClass:"col-mat-desc-wrap"}, {key:"group",label:"Material Group"},
         ...allPlantNames.map(pn => ({key:`__p__${pn}`, label:pn, rawKey:`__r__${pn}`})),
         {key:"grandTotal",label:"Grand Total"},
       ];
@@ -1479,8 +1479,8 @@ function renderFlow() {
   ]);
 
   const reorderCols = [
-    {key:"Material", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"},
-    {key:"Material Description", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"},
+    {key:"Material", label:"Material Code", fmt:(val,r)=>renderMatCode(val,r), raw:true, cellClass:"col-mat-code-wrap"},
+    {key:"Material Description", label:"Material Description", fmt:(val,r)=>renderMatDesc(val,r), raw:true, cellClass:"col-mat-desc-wrap"},
     {key:"Material Group Name",       label:"Material Group"},
     {key:"Plant Name",                label:"Plant"},
     {key:"Unrestricted Stock",        label:"Avail Qty",        fmt:fmtQty, rawKey:"Unrestricted Stock",        cellClass:"col-qty"},
@@ -1521,8 +1521,8 @@ function renderFlow() {
 
   // Inter-location transfers
   const transferCols = [
-    {key:"Material", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"},
-    {key:"Material Description", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"},
+    {key:"Material", label:"Material Code", fmt:(val,r)=>renderMatCode(val,r), raw:true, cellClass:"col-mat-code-wrap"},
+    {key:"Material Description", label:"Material Description", fmt:(val,r)=>renderMatDesc(val,r), raw:true, cellClass:"col-mat-desc-wrap"},
     {key:"Plant Name",                label:"Receiving Plant"},
     {key:"_purDoc",                   label:"Purchasing Document"},
     {key:"_supPlant",                 label:"Supplying Plant"},
@@ -1552,8 +1552,8 @@ function renderFlow() {
   }
 
   const flowDlCols = [
-    {key:"Material", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"},
-    {key:"Material Description", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"},
+    {key:"Material", label:"Material Code", fmt:(val,r)=>renderMatCode(val,r), raw:true, cellClass:"col-mat-code-wrap"},
+    {key:"Material Description", label:"Material Description", fmt:(val,r)=>renderMatDesc(val,r), raw:true, cellClass:"col-mat-desc-wrap"},
     {key:"Plant Name",                        label:"Plant"},
     {key:"Material Group Name",               label:"Material Group"},
     {key:"Unrestricted Stock",                label:"Available Qty",      rawKey:"Unrestricted Stock"},
@@ -1614,8 +1614,8 @@ function renderPreviewTable() {
   document.getElementById("preview-count").innerHTML = `Showing <b>${df.length.toLocaleString()}</b> of <b>${rawDf.length.toLocaleString()}</b> records`;
 
   const cols = [
-    {key:"Material", label:"Material Code", fmt:r=>renderMatCode(r), raw:true, cellClass:"col-mat-code-wrap"},
-    {key:"Material Description", label:"Material Description", fmt:r=>renderMatDesc(r), raw:true, cellClass:"col-mat-desc-wrap"},
+    {key:"Material", label:"Material Code", fmt:(val,r)=>renderMatCode(val,r), raw:true, cellClass:"col-mat-code-wrap"},
+    {key:"Material Description", label:"Material Description", fmt:(val,r)=>renderMatDesc(val,r), raw:true, cellClass:"col-mat-desc-wrap"},
     {key:"Plant Name",                        label:"Plant"},
     {key:"Material Group Name",               label:"Material Group"},
     {key:"Unrestricted Stock",                label:"Avail Qty",        fmt:fmtQty, rawKey:"Unrestricted Stock",          cellClass:"col-qty"},
@@ -1815,9 +1815,11 @@ function handleReconcileFileUpload(file) {
         const r       = rows[i];
         const srcMat  = String(r[0] || "").trim();
         const srcDesc = String(r[1] || "").trim();
-        const factor  = parseFloat(r[2]);
-        const tgtMat  = String(r[3] || "").trim();
-        const tgtDesc = String(r[4] || "").trim();
+        // r[2] = Source Unit (skipped per hint: Material · Desc · Unit · Factor · Target · Desc · Unit)
+        const factor  = parseFloat(r[3]);
+        const tgtMat  = String(r[4] || "").trim();
+        const tgtDesc = String(r[5] || "").trim();
+        // r[6] = Target Unit (captured for storage)
 
 
 
@@ -1829,9 +1831,9 @@ function handleReconcileFileUpload(file) {
 
         // FIX ROBUST: store factor with 9dp precision cap
         reconcileGroups.push({
-          sourceMaterial: srcMat, sourceDesc: srcDesc, sourceUnit: "",
+          sourceMaterial: srcMat, sourceDesc: srcDesc, sourceUnit: String(r[2] || "").trim(),
           conversionFactor: Math.round(factor * 1e9) / 1e9,
-          targetMaterial: tgtMat, targetDesc: tgtDesc, targetUnit: "",
+          targetMaterial: tgtMat, targetDesc: tgtDesc, targetUnit: String(r[6] || "").trim(),
         });
         added++;
       }
