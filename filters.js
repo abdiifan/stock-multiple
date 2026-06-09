@@ -13,11 +13,10 @@
  * Returns true if the material code looks like a non-medical / non-trade item
  * that should be excluded from pharmaceutical inventory analysis.
  *
- * Common EPSS patterns to exclude:
+ * Exclusion rules:
  *   - Codes starting with "NT" (Non-Trade)
+ *   - Codes that do NOT start with 1, 2, 3, or 4 (pharmaceutical SAP codes)
  *   - Empty / blank codes
- *
- * Extend this list to match your actual data as needed.
  */
 function isNonMedicalCode(code) {
   if (!code) return false;
@@ -27,11 +26,22 @@ function isNonMedicalCode(code) {
   // Non-Trade prefix
   if (c.startsWith("NT")) return true;
 
-  // You can add more prefixes here, e.g.:
-  // if (c.startsWith("SRV")) return true;  // services
-  // if (c.startsWith("ASSET")) return true;
+  // Only allow pharmaceutical material codes starting with 1, 2, 3, or 4.
+  // All other prefixes (letters, 0, 5-9, etc.) are non-medical.
+  if (!/^[1234]/.test(c)) return true;
 
   return false;
+}
+
+/**
+ * Returns true if the material code is a valid pharmaceutical code.
+ * Pharmaceutical SAP material codes start with 1, 2, 3, or 4.
+ */
+function isMedicalCode(code) {
+  if (!code) return false;
+  const c = String(code).trim();
+  if (!c) return false;
+  return /^[1234]/.test(c);
 }
 
 /**
