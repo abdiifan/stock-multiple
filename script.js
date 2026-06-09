@@ -392,7 +392,7 @@ function populateAllFilters() {
   ];
   plantConfigs.forEach(cfg => {
     const wrap = document.getElementById(cfg.wrapId);
-    if (wrap) { wrap.dataset.page = cfg.page; wrap.dataset.key = cfg.key; }
+    if (wrap) { wrap.dataset.page = cfg.page; wrap.dataset.key = "plants"; }
     buildMultiSelect(cfg.wrapId, cfg.ddId, plants, "All Plants");
   });
 
@@ -407,7 +407,7 @@ function populateAllFilters() {
   ];
   mgConfigs.forEach(cfg => {
     const wrap = document.getElementById(cfg.wrapId);
-    if (wrap) { wrap.dataset.page = cfg.page; wrap.dataset.key = cfg.key; }
+    if (wrap) { wrap.dataset.page = cfg.page; wrap.dataset.key = "mgs"; }
     buildMultiSelect(cfg.wrapId, cfg.ddId, mgs, "All Material Groups");
   });
 
@@ -2192,25 +2192,33 @@ document.addEventListener("DOMContentLoaded", () => {
     const applyBtn = document.getElementById(applyId);
     const clearBtn = document.getElementById(clearId);
     if (applyBtn) applyBtn.addEventListener("click", () => {
+      if (!rawDf.length) return; // no data loaded yet
+      // Look up wrap at click-time so we always get the live DOM element
+      // (populateAllFilters rebuilds the dropdown on each file upload)
       if (plantWrapId) {
         const wrap = document.getElementById(plantWrapId);
-        pageFilters[page].plants = wrap?._getSelected ? wrap._getSelected() : [];
+        pageFilters[page].plants = (wrap && wrap._getSelected) ? wrap._getSelected() : [];
       }
       if (mgWrapId) {
         const wrap = document.getElementById(mgWrapId);
-        pageFilters[page].mgs = wrap?._getSelected ? wrap._getSelected() : [];
+        pageFilters[page].mgs = (wrap && wrap._getSelected) ? wrap._getSelected() : [];
       }
+      invalidateReconCache();
       renderPage(page);
     });
     if (clearBtn) clearBtn.addEventListener("click", () => {
+      if (!rawDf.length) return;
       if (plantWrapId) {
         pageFilters[page].plants = [];
-        document.getElementById(plantWrapId)?._clearSelected?.();
+        const wrap = document.getElementById(plantWrapId);
+        if (wrap && wrap._clearSelected) wrap._clearSelected();
       }
       if (mgWrapId) {
         pageFilters[page].mgs = [];
-        document.getElementById(mgWrapId)?._clearSelected?.();
+        const wrap = document.getElementById(mgWrapId);
+        if (wrap && wrap._clearSelected) wrap._clearSelected();
       }
+      invalidateReconCache();
       renderPage(page);
     });
   }
