@@ -88,6 +88,12 @@ body { display: flex; }
   display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center;
   background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
   padding: 0.65rem 0.9rem; margin-bottom: 1.4rem;
+  position: relative;
+}
+/* Apply / Clear buttons must sit above the ms-dropdown (z-index:300) */
+.filter-bar .apply-btn {
+  position: relative;
+  z-index: 310;
 }
 .filter-select {
   background: var(--surface2); color: var(--text); border: 1px solid var(--border2);
